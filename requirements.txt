@@ -1,0 +1,3 @@
+xai-sdk
+python-dotenv
+rich
