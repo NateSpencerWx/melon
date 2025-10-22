@@ -174,18 +174,7 @@ If you're new to using the terminal, here are some helpful commands:
 
 ## 🔐 Privacy & Safety
 
-- Melon runs **on your computer** - your data stays with you
 - All commands that could modify your system require your approval first
 - You can see exactly what command will run before it executes
 - You can edit commands before they run if needed
 - Your API key is stored locally in a `.env` file (never share this file!)
-
-## 📚 Learn More
-
-- **GitHub Repository:** https://github.com/NateSpencerWx/melon
-- **Report Issues:** https://github.com/NateSpencerWx/melon/issues
-- **xAI Documentation:** https://docs.x.ai/
-
----
-
-**Made with 🍉 by the community** | Powered by xAI's Grok
