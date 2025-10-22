@@ -1,7 +1,7 @@
 # Melon
 Do (almost) anything on your computer with AI
 
-Melon is a CLI tool that uses xAI's Grok model to interpret your requests and execute terminal commands on your behalf, with built-in safety reviews.
+Melon is a CLI tool that uses xAI's Grok 4 Fast Reasoning model to interpret your requests and execute terminal commands on your behalf, with built-in safety reviews.
 
 ## Installation
 
