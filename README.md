@@ -5,13 +5,9 @@ Melon is a CLI tool that uses xAI's Grok 4 Fast Reasoning model to interpret you
 
 ## Installation
 
-1. Clone this repository.
-2. Install dependencies: `pip install -r requirements.txt`
-3. Run: `python melon.py` or `./melon.py` (after making executable)
+Click here, and our AI asssistant will walk you through installation! It should take less then 5 minutes: https://www.perplexity.ai/spaces/install-bot-KsasUoP0QS6ZBZVh2mFw4A#0
 
-On first run, it will prompt for your xAI API key if not found in `.env`.
-
-Get your API key from: https://console.x.ai/team/default/api-keys
+On first run, it will prompt for your xAI API key if not found in `.env`. Melon will tell you how to get this.
 
 ## Usage
 
@@ -20,3 +16,4 @@ Run Melon and type what you want to do, e.g., "list files in current directory",
 Melon will suggest a command, review it for safety, and execute it if verified safe or after confirmation if it thinks you may want to review it yourself first.
 
 Melon maintains conversation history across multiple interactions, allowing for contextual follow-up requests. To clear the conversation history and start fresh, type `/clear` or `clear`.
+To be clear, when you stop Melon, the conversation history is lost (for now)
