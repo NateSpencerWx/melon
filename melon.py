@@ -245,29 +245,88 @@ def main():
                 # Handle tool calls in a loop until we get a final response
                 max_iterations = 10  # Prevent infinite loops
                 iteration = 0
+                failed_commands = []  # Track failed commands to detect loops
+                consecutive_failures = 0
+                
                 while response.tool_calls and iteration < max_iterations:
                     print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in response.tool_calls]}\033[0m")
                     chat.append(response)
 
+                    iteration_had_error = False
                     for tool_call in response.tool_calls:
                         print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
                         result = tools_map[function_name](**function_args)
+                        
+                        # Track if this command failed
+                        if "error" in result or "denied" in result:
+                            iteration_had_error = True
+                            if function_name == "run_terminal_command":
+                                cmd = function_args.get("command", "")
+                                failed_commands.append(cmd)
+                                
+                                # Check if we're in a loop (similar commands failing repeatedly)
+                                if len(failed_commands) >= 3:
+                                    # Check last 3 failed commands for similarity
+                                    recent_failures = failed_commands[-3:]
+                                    # Simple heuristic: if they all start similarly or contain same keywords
+                                    first_words = [cmd.split()[0] if cmd.split() else "" for cmd in recent_failures]
+                                    if len(set(first_words)) == 1 and first_words[0]:
+                                        print(f"\033[93m⚠️  Detected repeated command failures with '{first_words[0]}'. This approach may not be working.\033[0m")
+                                        # Add helpful context to the chat
+                                        chat.append(tool_result(json.dumps({
+                                            **result,
+                                            "warning": f"You've tried similar commands multiple times and they keep failing. Consider a completely different approach or ask the user for clarification on what they need."
+                                        })))
+                                        continue
+                        
                         print(f"\033[96m✅ Done!\033[0m")
                         chat.append(tool_result(json.dumps(result)))
+                    
+                    # Track consecutive failures
+                    if iteration_had_error:
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
+                    
+                    # If we've had too many consecutive failures, suggest stopping
+                    if consecutive_failures >= 5:
+                        print(f"\033[93m⚠️  Multiple consecutive command failures detected. Melon may be struggling with this request.\033[0m")
+                        chat.append(user("I notice you're having trouble with this request. Please either try a completely different approach, or let me know if you need more information from me to proceed."))
 
                     print("\033[96m🤔 Melon is thinking about the results...\033[0m")
-                    response = chat.sample()
+                    try:
+                        response = chat.sample()
+                    except Exception as e:
+                        print(f"\033[91m❌ Error getting response from Melon: {e}\033[0m")
+                        print("\033[93m💡 The conversation state may be corrupted. Consider typing '/clear' to start fresh.\033[0m")
+                        break
                     iteration += 1
+
+                # Check if we hit max iterations
+                if iteration >= max_iterations and response.tool_calls:
+                    print("\033[93m⚠️  Melon has been working on this for a while and may be stuck in a loop.\033[0m")
+                    print("\033[93m💡 Consider rephrasing your request or typing '/clear' to start fresh.\033[0m")
+                    # Try to get a final response without tool calls
+                    chat.append(user("Please provide a summary of what you've tried and any results, without making more tool calls."))
+                    try:
+                        response = chat.sample()
+                    except Exception as e:
+                        print(f"\033[91m❌ Error getting final response: {e}\033[0m")
 
                 # Check if response has content
                 if response.content:
                     print("\033[96m💬 Here's what Melon has to say:\033[0m")
                     console.print(Markdown(response.content))
                     chat.append(assistant(response.content))
+                elif response.tool_calls:
+                    # Response still has tool calls but we stopped processing them
+                    print("\033[93m⚠️  Melon wanted to run more commands but stopped to avoid getting stuck.\033[0m")
+                    print("\033[93m💡 Try rephrasing your request or breaking it into smaller steps.\033[0m")
                 else:
-                    print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
+                    print("\033[93m⚠️  Melon didn't provide a response. This might be due to an API issue.\033[0m")
+                    print("\033[93m💡 You can try your request again, or type '/clear' to start fresh if issues persist.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
