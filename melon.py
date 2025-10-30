@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import time
 from dotenv import load_dotenv
 from xai_sdk import Client
 from xai_sdk.chat import system, user, assistant, tool, tool_result
@@ -25,6 +26,60 @@ LOGO = """
 ╚═══════════════════════════════════════════════════════════╝
 """
 
+def retry_with_backoff(func, max_retries=3, initial_delay=1.0, backoff_factor=2.0, console=None):
+    """
+    Retry a function with exponential backoff for rate limiting errors.
+    
+    Args:
+        func: The function to retry (should be a callable)
+        max_retries: Maximum number of retry attempts (default: 3)
+        initial_delay: Initial delay in seconds (default: 1.0)
+        backoff_factor: Factor to multiply delay by after each retry (default: 2.0)
+        console: Optional console for rich output
+    
+    Returns:
+        The result of the function call
+    
+    Raises:
+        The last exception if all retries fail
+    """
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            error_msg = str(e).lower()
+            
+            # Check if this is a rate limit error or similar API issue
+            is_rate_limit = any(keyword in error_msg for keyword in [
+                'rate limit', 'too many requests', '429', 'quota', 'throttle'
+            ])
+            
+            if attempt < max_retries and is_rate_limit:
+                if console:
+                    console.print(f"\n[yellow]⚠️  Rate limit hit. Retrying in {delay:.1f} seconds... (attempt {attempt + 1}/{max_retries})[/yellow]")
+                else:
+                    print(f"\n\033[93m⚠️  Rate limit hit. Retrying in {delay:.1f} seconds... (attempt {attempt + 1}/{max_retries})\033[0m")
+                time.sleep(delay)
+                delay *= backoff_factor
+            elif attempt < max_retries:
+                # For other errors, retry but with less delay
+                if console:
+                    console.print(f"\n[yellow]⚠️  API error occurred. Retrying in {delay:.1f} seconds... (attempt {attempt + 1}/{max_retries})[/yellow]")
+                else:
+                    print(f"\n\033[93m⚠️  API error occurred. Retrying in {delay:.1f} seconds... (attempt {attempt + 1}/{max_retries})\033[0m")
+                time.sleep(delay)
+                delay *= backoff_factor
+            else:
+                # Last attempt failed, raise the exception
+                raise last_exception
+    
+    # Should never reach here, but just in case
+    raise last_exception
+
 def is_command_modifying(command: str, client, api_key) -> tuple[bool, str]:
     """
     Use AI to determine if a command modifies the system and get a description.
@@ -43,7 +98,7 @@ def is_command_modifying(command: str, client, api_key) -> tuple[bool, str]:
             "Commands that are READ-ONLY include: listing files, reading file contents, checking status, viewing information, etc."
         ))
         review_chat.append(user(f"Analyze this command: {command}"))
-        review_response = review_chat.sample()
+        review_response = retry_with_backoff(lambda: review_chat.sample())
         
         # Parse the JSON response
         response_text = review_response.content.strip()
@@ -173,7 +228,7 @@ def main():
                 # Make a test API call to verify the key
                 test_chat = test_client.chat.create(model="grok-4-fast-reasoning")
                 test_chat.append(system("Say 'OK' if this works. You ABOSLUTELY MUST respond with only 'OK' if you see this message."))
-                test_response = test_chat.sample()
+                test_response = retry_with_backoff(lambda: test_chat.sample())
                 if "OK" not in test_response.content:
                     raise Exception("Test API call failed")
                 break  # Valid key, exit loop
@@ -240,92 +295,34 @@ def main():
             try:
                 chat.append(user(user_input))
                 print("\033[96m🤔 Getting a response from Melon...\033[0m")
-                response = chat.sample()
+                response = retry_with_backoff(lambda: chat.sample(), console=console)
 
                 # Handle tool calls in a loop until we get a final response
                 max_iterations = 10  # Prevent infinite loops
                 iteration = 0
-                failed_commands = []  # Track failed commands to detect loops
-                consecutive_failures = 0
-                
                 while response.tool_calls and iteration < max_iterations:
                     print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in response.tool_calls]}\033[0m")
                     chat.append(response)
 
-                    iteration_had_error = False
                     for tool_call in response.tool_calls:
                         print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
                         result = tools_map[function_name](**function_args)
-                        
-                        # Track if this command failed
-                        if "error" in result or "denied" in result:
-                            iteration_had_error = True
-                            if function_name == "run_terminal_command":
-                                cmd = function_args.get("command", "")
-                                failed_commands.append(cmd)
-                                
-                                # Check if we're in a loop (similar commands failing repeatedly)
-                                if len(failed_commands) >= 3:
-                                    # Check last 3 failed commands for similarity
-                                    recent_failures = failed_commands[-3:]
-                                    # Simple heuristic: if they all start similarly or contain same keywords
-                                    first_words = [cmd.split()[0] if cmd.split() else "" for cmd in recent_failures]
-                                    if len(set(first_words)) == 1 and first_words[0]:
-                                        print(f"\033[93m⚠️  Detected repeated command failures with '{first_words[0]}'. This approach may not be working.\033[0m")
-                                        # Add helpful context to the result
-                                        result = {
-                                            **result,
-                                            "warning": f"You've tried similar commands multiple times and they keep failing. Consider a completely different approach or ask the user for clarification on what they need."
-                                        }
-                        
                         print(f"\033[96m✅ Done!\033[0m")
                         chat.append(tool_result(json.dumps(result)))
-                    
-                    # Track consecutive failures
-                    if iteration_had_error:
-                        consecutive_failures += 1
-                    else:
-                        consecutive_failures = 0
-                    
-                    # If we've had too many consecutive failures, suggest stopping
-                    if consecutive_failures >= 5:
-                        print(f"\033[93m⚠️  Multiple consecutive command failures detected. Melon may be struggling with this request.\033[0m")
-                        chat.append(user("I notice you're having trouble with this request. Please either try a completely different approach, or let me know if you need more information from me to proceed."))
 
                     print("\033[96m🤔 Melon is thinking about the results...\033[0m")
-                    try:
-                        response = chat.sample()
-                    except Exception as e:
-                        print(f"\033[91m❌ Error getting response from Melon: {e}\033[0m")
-                        print("\033[93m💡 The conversation state may be corrupted. Consider typing '/clear' to start fresh.\033[0m")
-                        break
+                    response = retry_with_backoff(lambda: chat.sample(), console=console)
                     iteration += 1
-
-                # Check if we hit max iterations
-                if iteration >= max_iterations and response.tool_calls:
-                    print("\033[93m⚠️  Melon has been working on this for a while and may be stuck in a loop.\033[0m")
-                    print("\033[93m💡 Consider rephrasing your request or typing '/clear' to start fresh.\033[0m")
-                    # Try to get a final response without tool calls
-                    chat.append(user("Please provide a summary of what you've tried and any results, without making more tool calls."))
-                    try:
-                        response = chat.sample()
-                    except Exception as e:
-                        print(f"\033[91m❌ Error getting final response: {e}\033[0m")
 
                 # Check if response has content
                 if response.content:
                     print("\033[96m💬 Here's what Melon has to say:\033[0m")
                     console.print(Markdown(response.content))
                     chat.append(assistant(response.content))
-                elif response.tool_calls:
-                    # Response still has tool calls but we stopped processing them
-                    print("\033[93m⚠️  Melon wanted to run more commands but stopped to avoid getting stuck.\033[0m")
-                    print("\033[93m💡 Try rephrasing your request or breaking it into smaller steps.\033[0m")
                 else:
-                    print("\033[93m⚠️  Melon didn't provide a response. This might be due to an API issue.\033[0m")
-                    print("\033[93m💡 You can try your request again, or type '/clear' to start fresh if issues persist.\033[0m")
+                    print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
