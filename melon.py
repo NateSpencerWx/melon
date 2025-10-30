@@ -24,6 +24,30 @@ LOGO = """
 ╚═══════════════════════════════════════════════════════════╝
 """
 
+# Constants
+DEFAULT_MODEL = "x-ai/grok-4-fast"
+SAFETY_MODEL = "x-ai/grok-4-fast"  # Hardcoded for safety analysis
+FAVORITES_FILE = ".melon_favorites.json"
+
+def load_favorites():
+    """Load favorite models from file"""
+    try:
+        if os.path.exists(FAVORITES_FILE):
+            with open(FAVORITES_FILE, 'r') as f:
+                return json.load(f)
+        return []
+    except Exception:
+        return []
+
+def save_favorites(favorites):
+    """Save favorite models to file"""
+    try:
+        with open(FAVORITES_FILE, 'w') as f:
+            json.dump(favorites, f, indent=2)
+        return True
+    except Exception:
+        return False
+
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
     Use AI to determine if a command modifies the system and get a description.
@@ -31,7 +55,7 @@ def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
     try:
         response = client.chat.completions.create(
-            model="openai/gpt-4o-mini",
+            model=SAFETY_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -50,7 +74,8 @@ def is_command_modifying(command: str, client) -> tuple[bool, str]:
                     "role": "user",
                     "content": f"Analyze this command: {command}"
                 }
-            ]
+            ],
+            extra_body={"reasoning": True}
         )
         
         # Parse the JSON response
@@ -161,6 +186,98 @@ def create_tools_map(client, console):
         "run_terminal_command": lambda command: run_terminal_command(command, client, console)
     }
 
+def handle_model_selection(current_model, console):
+    """Handle the model selection interface"""
+    favorites = load_favorites()
+    
+    console.print("\n[cyan]🤖 Model Selection[/cyan]")
+    console.print(f"[yellow]Current model:[/yellow] {current_model}")
+    console.print("\n[cyan]Options:[/cyan]")
+    console.print("  [1] Enter a model name")
+    console.print("  [2] Select from favorites")
+    console.print("  [3] Add current model to favorites")
+    console.print("  [4] Manage favorites")
+    console.print("  [5] Cancel")
+    
+    choice = input("\n\033[95mSelect an option (1-5): \033[0m").strip()
+    
+    if choice == "1":
+        # Enter a model name
+        model_name = input("\033[95mEnter model name (e.g., openai/gpt-4o, anthropic/claude-3.5-sonnet): \033[0m").strip()
+        if model_name:
+            console.print(f"[green]✓ Switched to model: {model_name}[/green]")
+            return model_name
+    
+    elif choice == "2":
+        # Select from favorites
+        if not favorites:
+            console.print("[yellow]No favorites saved yet. Add some first![/yellow]")
+            return current_model
+        
+        console.print("\n[cyan]📌 Favorite Models:[/cyan]")
+        for i, fav in enumerate(favorites, 1):
+            console.print(f"  [{i}] {fav}")
+        
+        try:
+            fav_choice = int(input("\n\033[95mSelect a favorite (number): \033[0m").strip())
+            if 1 <= fav_choice <= len(favorites):
+                selected_model = favorites[fav_choice - 1]
+                console.print(f"[green]✓ Switched to model: {selected_model}[/green]")
+                return selected_model
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "3":
+        # Add current model to favorites
+        if current_model in favorites:
+            console.print(f"[yellow]Model '{current_model}' is already in favorites[/yellow]")
+        else:
+            favorites.append(current_model)
+            if save_favorites(favorites):
+                console.print(f"[green]✓ Added '{current_model}' to favorites[/green]")
+            else:
+                console.print("[red]Failed to save favorites[/red]")
+    
+    elif choice == "4":
+        # Manage favorites
+        if not favorites:
+            console.print("[yellow]No favorites to manage[/yellow]")
+            return current_model
+        
+        console.print("\n[cyan]📌 Manage Favorites:[/cyan]")
+        for i, fav in enumerate(favorites, 1):
+            console.print(f"  [{i}] {fav}")
+        console.print("\n[cyan]Enter the number to remove, or 'c' to cancel:[/cyan]")
+        
+        remove_choice = input("\033[95m> \033[0m").strip().lower()
+        if remove_choice == 'c':
+            return current_model
+        
+        try:
+            remove_idx = int(remove_choice) - 1
+            if 0 <= remove_idx < len(favorites):
+                removed = favorites.pop(remove_idx)
+                if save_favorites(favorites):
+                    console.print(f"[green]✓ Removed '{removed}' from favorites[/green]")
+                else:
+                    console.print("[red]Failed to save favorites[/red]")
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "5":
+        # Cancel
+        console.print("[yellow]Cancelled[/yellow]")
+    
+    else:
+        console.print("[red]Invalid option[/red]")
+    
+    return current_model
+
+
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -219,6 +336,9 @@ def main():
     # Create tools map with access to client and console
     tools_map = create_tools_map(client, console)
 
+    # Initialize current model
+    current_model = DEFAULT_MODEL
+
     # Initialize conversation history with system message
     system_message = {
         "role": "system",
@@ -235,12 +355,18 @@ def main():
     }
     messages = [system_message]
 
-    print("\033[96m💡 Type your request in natural language. Type '/clear' to reset conversation history, and ^C to leave.\033[0m")
+    print("\033[96m💡 Type your request in natural language. Type '/clear' to reset conversation history, 'model' to change models, and ^C to leave.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     while True:
         try:
             user_input = input("\033[95m🍉 \033[0m").strip()
             if not user_input:
+                continue
+
+            # Check for model selection command
+            if user_input.lower() == "model":
+                current_model = handle_model_selection(current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
             # Check for clear command
@@ -263,9 +389,10 @@ def main():
                 
                 while iteration < max_iterations:
                     response = client.chat.completions.create(
-                        model="openai/gpt-4o",
+                        model=current_model,
                         messages=messages,
-                        tools=[tool_definition]
+                        tools=[tool_definition],
+                        extra_body={"reasoning": True}
                     )
                     
                     assistant_message = response.choices[0].message
