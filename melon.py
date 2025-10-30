@@ -261,14 +261,22 @@ def main():
                     response = chat.sample()
                     iteration += 1
 
+                # Check if we hit max iterations with tool calls still pending
+                if iteration >= max_iterations and response.tool_calls:
+                    print("\033[93m⚠️  Maximum iteration limit reached. Melon tried to make too many tool calls in succession.\033[0m")
+                    print(f"\033[90mDebug - Response object: {response}\033[0m")
+                    # Append the response to maintain conversation state
+                    chat.append(response)
                 # Check if response has content
-                if response.content:
+                elif response.content:
                     print("\033[96m💬 Here's what Melon has to say:\033[0m")
                     console.print(Markdown(response.content))
-                    chat.append(assistant(response.content))
+                    chat.append(response)
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
+                    # Append the response to maintain conversation state even if empty
+                    chat.append(response)
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
