@@ -10,7 +10,8 @@ setup(
         ],
     },
     install_requires=[
-        "xai-sdk",
+        "openai",
         "python-dotenv",
+        "rich",
     ],
 )
