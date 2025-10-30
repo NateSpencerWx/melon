@@ -274,12 +274,11 @@ def main():
                                     first_words = [cmd.split()[0] if cmd.split() else "" for cmd in recent_failures]
                                     if len(set(first_words)) == 1 and first_words[0]:
                                         print(f"\033[93m⚠️  Detected repeated command failures with '{first_words[0]}'. This approach may not be working.\033[0m")
-                                        # Add helpful context to the chat
-                                        chat.append(tool_result(json.dumps({
+                                        # Add helpful context to the result
+                                        result = {
                                             **result,
                                             "warning": f"You've tried similar commands multiple times and they keep failing. Consider a completely different approach or ask the user for clarification on what they need."
-                                        })))
-                                        continue
+                                        }
                         
                         print(f"\033[96m✅ Done!\033[0m")
                         chat.append(tool_result(json.dumps(result)))
