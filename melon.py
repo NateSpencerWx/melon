@@ -29,6 +29,7 @@ DEFAULT_MODEL = "x-ai/grok-4-fast"
 SAFETY_MODEL = "x-ai/grok-4-fast"  # Hardcoded for safety analysis
 FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
+HISTORY_FILE = ".melon_history.json"
 
 def load_settings():
     """Load settings from file with error recovery"""
@@ -148,6 +149,67 @@ def save_favorites(favorites):
         # Clean up temp file if it exists
         try:
             temp_file = f"{FAVORITES_FILE}.tmp"
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+        return False
+
+def load_history():
+    """Load conversation history from file with error recovery"""
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+                # Validate structure
+                if not isinstance(history, list):
+                    raise ValueError("History file contains invalid data structure (expected list)")
+                # Validate each message has required fields
+                for msg in history:
+                    if not isinstance(msg, dict) or 'role' not in msg:
+                        raise ValueError("Invalid message format in history")
+                return history
+        return []
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  History file corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{HISTORY_FILE}.backup"
+            if os.path.exists(HISTORY_FILE):
+                os.rename(HISTORY_FILE, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return []
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read history file: {e}. Starting with empty history.\033[0m")
+        return []
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading history: {e}. Starting with empty history.\033[0m")
+        return []
+
+def save_history(history):
+    """Save conversation history to file with error handling"""
+    try:
+        # Validate input
+        if not isinstance(history, list):
+            raise ValueError("History must be a list")
+        
+        # Write to temporary file first
+        temp_file = f"{HISTORY_FILE}.tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, HISTORY_FILE)
+        return True
+    except (OSError, PermissionError) as e:
+        # Silently fail for history saving to not interrupt user flow
+        return False
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            temp_file = f"{HISTORY_FILE}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         except Exception:
@@ -559,7 +621,19 @@ def main():
             "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information."
         )
     }
-    messages = [system_message]
+    
+    # Load persisted conversation history
+    loaded_history = load_history()
+    if loaded_history and len(loaded_history) > 0:
+        # Verify the first message is a system message, if not prepend it
+        if loaded_history[0].get("role") != "system":
+            messages = [system_message] + loaded_history
+        else:
+            # Replace the old system message with the current one
+            messages = [system_message] + loaded_history[1:]
+        print(f"\033[92m✓ Loaded {len(loaded_history)} messages from history\033[0m\n")
+    else:
+        messages = [system_message]
 
     print("\033[96m💡 Type your request in natural language. Use '/m' to switch models, '/r' to toggle reasoning, '/clear' to reset, and ^C to leave.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
@@ -600,9 +674,11 @@ def main():
                 continue
 
             # Check for clear command
-            if lowered_input in ["clear"]:
+            if lowered_input in ["clear", "/clear"]:
                 print("\033[92m🧹 Conversation history cleared. Starting fresh!\033[0m")
                 messages = [system_message]
+                # Clear persisted history
+                save_history([])
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
@@ -689,6 +765,10 @@ def main():
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
+                
+                # Save conversation history after each successful interaction
+                # Skip the system message when saving (it's always added on load)
+                save_history(messages[1:])
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback

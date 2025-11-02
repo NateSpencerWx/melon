@@ -1,5 +1,7 @@
 .env
 .melon_favorites.json
+.melon_settings.json
+.melon_history.json
 __pycache__/
 *.pyc
 *.pyo
