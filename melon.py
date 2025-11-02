@@ -4,8 +4,7 @@ import json
 import os
 import subprocess
 from dotenv import load_dotenv
-from xai_sdk import Client
-from xai_sdk.chat import system, user, assistant, tool, tool_result
+from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -25,28 +24,169 @@ LOGO = """
 ╚═══════════════════════════════════════════════════════════╝
 """
 
-def is_command_modifying(command: str, client, api_key) -> tuple[bool, str]:
+# Constants
+DEFAULT_MODEL = "x-ai/grok-4-fast"
+SAFETY_MODEL = "x-ai/grok-4-fast"  # Hardcoded for safety analysis
+FAVORITES_FILE = ".melon_favorites.json"
+SETTINGS_FILE = ".melon_settings.json"
+
+def load_settings():
+    """Load settings from file with error recovery"""
+    default_settings = {"reasoning_enabled": False}
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                # Validate structure
+                if not isinstance(settings, dict):
+                    raise ValueError("Settings file contains invalid data structure")
+                # Ensure required keys exist
+                if "reasoning_enabled" not in settings:
+                    settings["reasoning_enabled"] = False
+                return settings
+        return default_settings
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  Settings file corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{SETTINGS_FILE}.backup"
+            if os.path.exists(SETTINGS_FILE):
+                os.rename(SETTINGS_FILE, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return default_settings
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read settings file: {e}. Using defaults.\033[0m")
+        return default_settings
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading settings: {e}. Using defaults.\033[0m")
+        return default_settings
+
+def save_settings(settings):
+    """Save settings to file with error handling"""
+    try:
+        # Validate input
+        if not isinstance(settings, dict):
+            raise ValueError("Settings must be a dictionary")
+        
+        # Write to temporary file first
+        temp_file = f"{SETTINGS_FILE}.tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(settings, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, SETTINGS_FILE)
+        return True
+    except (OSError, PermissionError) as e:
+        print(f"\033[91m❌ Cannot save settings: {e}\033[0m")
+        return False
+    except Exception as e:
+        print(f"\033[91m❌ Unexpected error saving settings: {e}\033[0m")
+        # Clean up temp file if it exists
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+        return False
+
+def load_favorites():
+    """Load favorite models from file with error recovery"""
+    try:
+        if os.path.exists(FAVORITES_FILE):
+            with open(FAVORITES_FILE, 'r') as f:
+                favorites = json.load(f)
+                # Validate structure
+                if not isinstance(favorites, list):
+                    raise ValueError("Favorites file contains invalid data structure (expected list)")
+                # Validate each item is a string
+                favorites = [str(fav) for fav in favorites if fav]
+                return favorites
+        return []
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  Favorites file corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{FAVORITES_FILE}.backup"
+            if os.path.exists(FAVORITES_FILE):
+                os.rename(FAVORITES_FILE, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return []
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read favorites file: {e}. Starting with empty list.\033[0m")
+        return []
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading favorites: {e}. Starting with empty list.\033[0m")
+        return []
+
+def save_favorites(favorites):
+    """Save favorite models to file with error handling"""
+    try:
+        # Validate input
+        if not isinstance(favorites, list):
+            raise ValueError("Favorites must be a list")
+        
+        # Ensure all items are strings
+        favorites = [str(fav) for fav in favorites if fav]
+        
+        # Write to temporary file first
+        temp_file = f"{FAVORITES_FILE}.tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(favorites, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, FAVORITES_FILE)
+        return True
+    except (OSError, PermissionError) as e:
+        print(f"\033[91m❌ Cannot save favorites: {e}\033[0m")
+        return False
+    except Exception as e:
+        print(f"\033[91m❌ Unexpected error saving favorites: {e}\033[0m")
+        # Clean up temp file if it exists
+        try:
+            temp_file = f"{FAVORITES_FILE}.tmp"
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+        return False
+
+def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
     Use AI to determine if a command modifies the system and get a description.
     Returns (is_modifying, description)
     """
     try:
-        review_chat = client.chat.create(model="grok-4-fast-reasoning")
-        review_chat.append(system(
-            "You are a command safety analyzer. Your job is to determine if a shell command will modify the system (write, delete, install, update, etc.) or just read information.\n"
-            "Respond with a JSON object in this exact format:\n"
-            "{\n"
-            '  "modifies": true/false,\n'
-            '  "description": "Brief description of what the command does"\n'
-            "}\n"
-            "Commands that MODIFY include: write operations, file creation/deletion, installations, updates, permission changes, network operations that send data, etc.\n"
-            "Commands that are READ-ONLY include: listing files, reading file contents, checking status, viewing information, etc."
-        ))
-        review_chat.append(user(f"Analyze this command: {command}"))
-        review_response = review_chat.sample()
+        # Enable reasoning for safety analysis to improve accuracy
+        response = client.chat.completions.create(
+            model=SAFETY_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a command safety analyzer. Your job is to determine if a shell command will modify the system (write, delete, install, update, etc.) or just read information.\n"
+                        "Respond with a JSON object in this exact format:\n"
+                        "{\n"
+                        '  "modifies": true/false,\n'
+                        '  "description": "Brief description of what the command does"\n'
+                        "}\n"
+                        "Commands that MODIFY include: write operations, file creation/deletion, installations, updates, permission changes, network operations that send data, etc.\n"
+                        "Commands that are READ-ONLY include: listing files, reading file contents, checking status, viewing information, etc."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Analyze this command: {command}"
+                }
+            ],
+            extra_body={"reasoning": {"effort": "high"}}
+        )
         
         # Parse the JSON response
-        response_text = review_response.content.strip()
+        response_text = response.choices[0].message.content.strip()
         # Extract JSON from markdown code blocks if present
         if "```json" in response_text:
             response_text = response_text.split("```json")[1].split("```")[0].strip()
@@ -59,14 +199,14 @@ def is_command_modifying(command: str, client, api_key) -> tuple[bool, str]:
         # If analysis fails, assume it's modifying to be safe
         return True, f"Unable to analyze command (error: {e}). Treating as potentially modifying."
 
-def run_terminal_command(command: str, client=None, api_key=None, console=None):
+def run_terminal_command(command: str, client=None, console=None):
     """
     Run a terminal command with optional review for modifying commands.
     If client is provided, will check if command is modifying and prompt user for approval.
     """
     # If we have a client, do the safety check
-    if client and api_key:
-        is_modifying, description = is_command_modifying(command, client, api_key)
+    if client:
+        is_modifying, description = is_command_modifying(command, client)
         
         if is_modifying:
             # Show the command and description to the user
@@ -96,7 +236,7 @@ def run_terminal_command(command: str, client=None, api_key=None, console=None):
                     if new_command:
                         command = new_command
                         # Re-check the edited command
-                        is_modifying, description = is_command_modifying(command, client, api_key)
+                        is_modifying, description = is_command_modifying(command, client)
                         if is_modifying:
                             if console:
                                 console.print(f"\n[yellow]Updated command still requires approval:[/yellow]")
@@ -129,52 +269,253 @@ def run_terminal_command(command: str, client=None, api_key=None, console=None):
     except Exception as e:
         return {"error": str(e)}
 
-tool_definition = tool(
-    name="run_terminal_command",
-    description="Run a terminal command on the user's computer and return the output. Use this for actions that require executing commands. Be cautious with commands that could delete files, modify system files, or perform other risky operations. BE AS SAFE AS POSSIBLE WHILE STILL DOING EVERYTHING YOU CAN TO FULFILL THE USER'S REQUEST.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The shell command to run."
-            }
-        },
-        "required": ["command"]
+tool_definition = {
+    "type": "function",
+    "function": {
+        "name": "run_terminal_command",
+        "description": "Run a terminal command on the user's computer and return the output. Use this for actions that require executing commands. Be cautious with commands that could delete files, modify system files, or perform other risky operations. BE AS SAFE AS POSSIBLE WHILE STILL DOING EVERYTHING YOU CAN TO FULFILL THE USER'S REQUEST.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to run."
+                }
+            },
+            "required": ["command"]
+        }
     }
-)
+}
 
-def create_tools_map(client, api_key, console):
+def create_tools_map(client, console):
     """Create a tools map with closures that have access to client and console"""
     return {
-        "run_terminal_command": lambda command: run_terminal_command(command, client, api_key, console)
+        "run_terminal_command": lambda command: run_terminal_command(command, client, console)
     }
+
+def handle_model_selection(current_model, console):
+    """Handle the model selection interface"""
+    favorites = load_favorites()
+    
+    console.print("\n[cyan]🤖 Model Selection[/cyan]")
+    console.print(f"[yellow]Current model:[/yellow] {current_model}")
+    console.print("\n[cyan]Options:[/cyan]")
+    console.print("  [1] Enter a model name")
+    console.print("  [2] Select from favorites")
+    console.print("  [3] Add current model to favorites")
+    console.print("  [4] Manage favorites")
+    console.print("  [5] Cancel")
+    
+    choice = input("\n\033[95mSelect an option (1-5): \033[0m").strip()
+    
+    if choice == "1":
+        # Enter a model name
+        model_name = input("\033[95mEnter model name (e.g., openai/gpt-4o, anthropic/claude-3.5-sonnet): \033[0m").strip()
+        if model_name:
+            console.print(f"[green]✓ Switched to model: {model_name}[/green]")
+            return model_name
+    
+    elif choice == "2":
+        # Select from favorites
+        if not favorites:
+            console.print("[yellow]No favorites saved yet. Add some first![/yellow]")
+            return current_model
+        
+        console.print("\n[cyan]📌 Favorite Models:[/cyan]")
+        for i, fav in enumerate(favorites, 1):
+            console.print(f"  [{i}] {fav}")
+        
+        try:
+            fav_choice = int(input("\n\033[95mSelect a favorite (number): \033[0m").strip())
+            if 1 <= fav_choice <= len(favorites):
+                selected_model = favorites[fav_choice - 1]
+                console.print(f"[green]✓ Switched to model: {selected_model}[/green]")
+                return selected_model
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "3":
+        # Add current model to favorites
+        if current_model in favorites:
+            console.print(f"[yellow]Model '{current_model}' is already in favorites[/yellow]")
+        else:
+            favorites.append(current_model)
+            if save_favorites(favorites):
+                console.print(f"[green]✓ Added '{current_model}' to favorites[/green]")
+            else:
+                console.print("[red]Failed to save favorites[/red]")
+    
+    elif choice == "4":
+        # Manage favorites
+        if not favorites:
+            console.print("[yellow]No favorites to manage[/yellow]")
+            return current_model
+        
+        console.print("\n[cyan]📌 Manage Favorites:[/cyan]")
+        for i, fav in enumerate(favorites, 1):
+            console.print(f"  [{i}] {fav}")
+        console.print("\n[cyan]Enter the number to remove, or 'c' to cancel:[/cyan]")
+        
+        remove_choice = input("\033[95m> \033[0m").strip().lower()
+        if remove_choice == 'c':
+            return current_model
+        
+        try:
+            remove_idx = int(remove_choice) - 1
+            if 0 <= remove_idx < len(favorites):
+                removed = favorites.pop(remove_idx)
+                if save_favorites(favorites):
+                    console.print(f"[green]✓ Removed '{removed}' from favorites[/green]")
+                else:
+                    console.print("[red]Failed to save favorites[/red]")
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "5":
+        # Cancel
+        console.print("[yellow]Cancelled[/yellow]")
+    
+    else:
+        console.print("[red]Invalid option[/red]")
+    
+    return current_model
+
+
+def process_model_command(command: str, current_model: str, console) -> str:
+    """Handle quick model switching via slash commands"""
+    favorites = load_favorites()
+    parts = command.split(maxsplit=1)
+
+    if len(parts) == 1:
+        return handle_model_selection(current_model, console)
+
+    target = parts[1].strip()
+
+    if not target:
+        return handle_model_selection(current_model, console)
+
+    if target in {"?", "list"}:
+        if favorites:
+            console.print("\n[cyan]📌 Favorite Models:[/cyan]")
+            for idx, fav in enumerate(favorites, 1):
+                console.print(f"  [{idx}] {fav}")
+        else:
+            console.print("[yellow]No favorites saved yet. Use the model menu to add some.[/yellow]")
+        return current_model
+
+    if target.isdigit():
+        fav_index = int(target) - 1
+        if 0 <= fav_index < len(favorites):
+            selected = favorites[fav_index]
+            console.print(f"[green]✓ Switched to model: {selected}[/green]")
+            return selected
+        console.print("[red]Favorite number out of range[/red]")
+        return current_model
+
+    console.print(f"[green]✓ Switched to model: {target}[/green]")
+    return target
+
+
+def toggle_reasoning(settings: dict, console, target_state: str | None = None) -> dict:
+    """Toggle reasoning setting with optional explicit on/off control"""
+    current_state = settings.get("reasoning_enabled", False)
+
+    if target_state in {"on", "enable", "enabled"}:
+        new_state = True
+    elif target_state in {"off", "disable", "disabled"}:
+        new_state = False
+    else:
+        new_state = not current_state
+
+    settings["reasoning_enabled"] = new_state
+    if save_settings(settings):
+        status_word = "enabled" if new_state else "disabled"
+        console.print(f"[green]✓ Reasoning {status_word}[/green]")
+    else:
+        console.print("[red]Failed to save settings[/red]")
+    return settings
+
+
+def display_status(console, current_model, settings):
+    """Show the current model and reasoning status with quick command hints"""
+    reasoning_on = settings.get("reasoning_enabled", False)
+    reasoning_label = "[green]ON[/green]" if reasoning_on else "[red]OFF[/red]"
+    console.print(
+        f"[bold cyan]Model[/bold cyan]: {current_model}    "
+        f"[bold cyan]Reasoning[/bold cyan]: {reasoning_label}"
+    )
+    console.print(
+        "[dim]Shortcuts: /m (model favorite #) switch model · /r (on|off) toggle reasoning · /clear reset history[/dim]"
+    )
+    console.print("")
+
+
+def handle_settings(console):
+    """Handle the settings interface"""
+    settings = load_settings()
+    
+    console.print("\n[cyan]⚙️  Settings[/cyan]")
+    console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
+    console.print("[dim]Tip: You can also use '/r on' or '/r off' at the main prompt for instant changes.[/dim]")
+    console.print("\n[cyan]Options:[/cyan]")
+    console.print("  [1] Toggle reasoning (enable extended thinking for complex queries)")
+    console.print("  [2] Cancel")
+    
+    choice = input("\n\033[95mSelect an option: \033[0m").strip()
+    
+    if choice == "1":
+        settings = toggle_reasoning(settings, console)
+    
+    elif choice == "2":
+        # Cancel
+        console.print("[yellow]Cancelled[/yellow]")
+    
+    else:
+        console.print("[red]Invalid option[/red]")
+    
+    console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
+    return settings
+
 
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
     load_dotenv()
-    api_key = os.getenv('XAI_API_KEY')
+    api_key = os.getenv('OPENROUTER_API_KEY')
 
     if not api_key:
-        print("\033[93m⚠️  No XAI API key found in .env file.\033[0m")
+        print("\033[93m⚠️  No OpenRouter API key found in .env file.\033[0m")
         print("\n📋 To get started:")
-        print("   1. Sign up at: \033[94mhttps://accounts.x.ai/sign-up?redirect=cloud-console\033[0m")
-        print("   2. Get your API key: \033[94mhttps://console.x.ai/team/default/api-keys\033[0m")
+        print("   1. Sign up at: \033[94mhttps://openrouter.ai/\033[0m")
+        print("   2. Get your API key from: \033[94mhttps://openrouter.ai/keys\033[0m")
+        print("")
+        print(" 💡You can use credits from other API providers with OpenRouter: \033[94mhttps://openrouter.ai/docs/use-cases/byok\033[0m")
         print()
         while True:
-            api_key = input("🔑 Enter your XAI API key: ").strip()
+            api_key = input("🔑 Enter your OpenRouter API key: ").strip()
             if not api_key:
                 print("\033[91m❌ No API key provided. Exiting.\033[0m")
                 return
             # Validate the API key
             try:
-                test_client = Client(api_key=api_key, timeout=10)
+                test_client = OpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=api_key,
+                    timeout=10
+                )
                 # Make a test API call to verify the key
-                test_chat = test_client.chat.create(model="grok-4-fast-reasoning")
-                test_chat.append(system("Say 'OK' if this works. You ABOSLUTELY MUST respond with only 'OK' if you see this message."))
-                test_response = test_chat.sample()
-                if "OK" not in test_response.content:
+                test_response = test_client.chat.completions.create(
+                    model="openai/gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Say 'OK' if this works. You ABSOLUTELY MUST respond with only 'OK' if you see this message."}
+                    ],
+                    max_tokens=10
+                )
+                if "OK" not in test_response.choices[0].message.content:
                     raise Exception("Test API call failed")
                 break  # Valid key, exit loop
             except Exception as e:
@@ -182,101 +523,172 @@ def main():
                 print("\033[93m🔄 Please try again.\033[0m")
                 continue
         with open('.env', 'w') as f:
-            f.write(f'XAI_API_KEY={api_key}\n')
+            f.write(f'OPENROUTER_API_KEY={api_key}\n')
         print("\033[92m✓ API key saved to .env\033[0m\n")
     else:
         print("\033[92m✓ API key loaded successfully\033[0m\n")
 
     try:
-        client = Client(api_key=api_key, timeout=3600)
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            timeout=3600
+        )
     except Exception as e:
         print(f"\033[91m❌ Error initializing client: {e}\033[0m")
         return
 
     # Create tools map with access to client and console
-    tools_map = create_tools_map(client, api_key, console)
+    tools_map = create_tools_map(client, console)
 
-    # Create chat session and append system message once
-    chat = client.chat.create(model="grok-4-fast-reasoning", tools=[tool_definition])
-    chat.append(system(
-        "Your name is Melon, an AI assistant. "
-        "In addition to your native capabilities, you have the ability to run terminal commands on the user's computer if needed to help complete/address the user's request/query. "
-        "Commands are automatically reviewed: read-only commands execute immediately, but commands that modify the system (write, delete, install, etc.) will prompt the user for approval before execution. "
-        "Do not worry about asking for permission - the review system handles this automatically. Just focus on fulfilling the user's request using the tool calls available to you. "
-        "If a user denies a command, acknowledge it gracefully and offer alternatives or ask how they'd like to proceed. "
-        "Additional background information: "
-        "You live in the terminal, inside a command line interface, where the user interacts with you. The name of the interface is the same as your name, Melon. "
-        "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information."
-    ))
+    # Initialize current model and settings
+    current_model = DEFAULT_MODEL
+    settings = load_settings()
 
-    print("\033[96m💡 Type your request in natural language. Type '/clear' to reset conversation history, and ^C to leave.\033[0m")
+    # Initialize conversation history with system message
+    system_message = {
+        "role": "system",
+        "content": (
+            "Your name is Melon, an AI assistant. "
+            "In addition to your native capabilities, you have the ability to run terminal commands on the user's computer if needed to help complete/address the user's request/query. "
+            "Commands are automatically reviewed: read-only commands execute immediately, but commands that modify the system (write, delete, install, etc.) will prompt the user for approval before execution. "
+            "Do not worry about asking for permission - the review system handles this automatically. Just focus on fulfilling the user's request using the tool calls available to you. "
+            "If a user denies a command, acknowledge it gracefully and offer alternatives or ask how they'd like to proceed. "
+            "Additional background information: "
+            "You live in the terminal, inside a command line interface, where the user interacts with you. The name of the interface is the same as your name, Melon. "
+            "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information."
+        )
+    }
+    messages = [system_message]
+
+    print("\033[96m💡 Type your request in natural language. Use '/m' to switch models, '/r' to toggle reasoning, '/clear' to reset, and ^C to leave.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     while True:
         try:
+            display_status(console, current_model, settings)
             user_input = input("\033[95m🍉 \033[0m").strip()
             if not user_input:
                 continue
 
+            # Check for quick commands
+            lowered_input = user_input.lower()
+
+            if lowered_input in {"model", "/model"}:
+                current_model = process_model_command("/m", current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            if lowered_input.startswith("/m"):
+                current_model = process_model_command(user_input, current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            # Check for settings command
+            if lowered_input in {"settings", "/settings"}:
+                settings = handle_settings(console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            # Quick reasoning toggle command
+            if lowered_input in {"/r", "/reason", "/reasoning"} or lowered_input.startswith("/r "):
+                target_state = None
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    target_state = parts[1].strip().lower()
+                settings = toggle_reasoning(settings, console, target_state)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
             # Check for clear command
-            if user_input.lower() in ["/clear", "clear", "clear history", "reset"]:
+            if lowered_input in ["clear"]:
                 print("\033[92m🧹 Conversation history cleared. Starting fresh!\033[0m")
-                chat = client.chat.create(model="grok-4-fast-reasoning", tools=[tool_definition])
-                chat.append(system(
-                    "Your name is Melon, an AI assistant. "
-                    "In addition to your native capabilities, you have the ability to run terminal commands on the user's computer if needed to help complete/address the user's request/query. "
-                    "Commands are automatically reviewed: read-only commands execute immediately, but commands that modify the system (write, delete, install, etc.) will prompt the user for approval before execution. "
-                    "Do not worry about asking for permission - the review system handles this automatically. Just focus on fulfilling the user's request using the tool calls available to you. "
-                    "If a user denies a command, acknowledge it gracefully and offer alternatives or ask how they'd like to proceed. "
-                    "Additional background information: "
-                    "You live in the terminal, inside a command line interface, where the user interacts with you. The name of the interface is the same as your name, Melon. "
-                    "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information. "
-                    "You maintain conversation history across multiple interactions. If the user wants to clear the conversation history, they can type '/clear' to start fresh."
-                ))
+                messages = [system_message]
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
             print("\n\033[93mThinking...\033[0m")
 
             try:
-                chat.append(user(user_input))
+                # Add user message to conversation
+                messages.append({"role": "user", "content": user_input})
                 print("\033[96m🤔 Getting a response from Melon...\033[0m")
-                response = chat.sample()
-
+                
                 # Handle tool calls in a loop until we get a final response
                 max_iterations = 10  # Prevent infinite loops
                 iteration = 0
-                while response.tool_calls and iteration < max_iterations:
-                    print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in response.tool_calls]}\033[0m")
-                    chat.append(response)
+                
+                while iteration < max_iterations:
+                    # Build API call parameters
+                    api_params = {
+                        "model": current_model,
+                        "messages": messages,
+                        "tools": [tool_definition]
+                    }
+                    
+                    # Add reasoning if enabled
+                    if settings.get('reasoning_enabled', False):
+                        api_params["extra_body"] = {"reasoning": {"effort": "high"}}
+                    
+                    response = client.chat.completions.create(**api_params)
+                    
+                    assistant_message = response.choices[0].message
+                    
+                    # Check if there are tool calls
+                    if assistant_message.tool_calls:
+                        print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in assistant_message.tool_calls]}\033[0m")
+                        
+                        # Add assistant message with tool calls to history
+                        messages.append({
+                            "role": "assistant",
+                            "content": assistant_message.content,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments
+                                    }
+                                }
+                                for tc in assistant_message.tool_calls
+                            ]
+                        })
 
-                    for tool_call in response.tool_calls:
-                        print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
-                        function_name = tool_call.function.name
-                        function_args = json.loads(tool_call.function.arguments)
-                        result = tools_map[function_name](**function_args)
-                        print(f"\033[96m✅ Done!\033[0m")
-                        chat.append(tool_result(json.dumps(result)))
+                        for tool_call in assistant_message.tool_calls:
+                            print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
+                            function_name = tool_call.function.name
+                            function_args = json.loads(tool_call.function.arguments)
+                            result = tools_map[function_name](**function_args)
+                            print(f"\033[96m✅ Done!\033[0m")
+                            
+                            # Add tool result to messages
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(result)
+                            })
 
-                    print("\033[96m🤔 Melon is thinking about the results...\033[0m")
-                    response = chat.sample()
-                    iteration += 1
+                        print("\033[96m🤔 Melon is thinking about the results...\033[0m")
+                        iteration += 1
+                    else:
+                        # No more tool calls, we have a final response
+                        messages.append({
+                            "role": "assistant",
+                            "content": assistant_message.content
+                        })
+                        break
 
-                # Check if we hit max iterations with tool calls still pending
-                if iteration >= max_iterations and response.tool_calls:
+                # Check if we hit max iterations
+                if iteration >= max_iterations:
                     print("\033[93m⚠️  Maximum iteration limit reached. Melon tried to make too many tool calls in succession.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
-                    # Append the response to maintain conversation state
-                    chat.append(response)
                 # Check if response has content
-                elif response.content:
+                elif assistant_message.content:
                     print("\033[96m💬 Here's what Melon has to say:\033[0m")
-                    console.print(Markdown(response.content))
-                    chat.append(response)
+                    console.print(Markdown(assistant_message.content))
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
-                    # Append the response to maintain conversation state even if empty
-                    chat.append(response)
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
