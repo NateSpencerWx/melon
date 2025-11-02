@@ -31,41 +31,127 @@ FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
 
 def load_settings():
-    """Load settings from file"""
+    """Load settings from file with error recovery"""
+    default_settings = {"reasoning_enabled": False}
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r') as f:
-                return json.load(f)
-        return {"reasoning_enabled": False}  # Default settings
-    except Exception:
-        return {"reasoning_enabled": False}
+                settings = json.load(f)
+                # Validate structure
+                if not isinstance(settings, dict):
+                    raise ValueError("Settings file contains invalid data structure")
+                # Ensure required keys exist
+                if "reasoning_enabled" not in settings:
+                    settings["reasoning_enabled"] = False
+                return settings
+        return default_settings
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  Settings file corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{SETTINGS_FILE}.backup"
+            if os.path.exists(SETTINGS_FILE):
+                os.rename(SETTINGS_FILE, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return default_settings
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read settings file: {e}. Using defaults.\033[0m")
+        return default_settings
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading settings: {e}. Using defaults.\033[0m")
+        return default_settings
 
 def save_settings(settings):
-    """Save settings to file"""
+    """Save settings to file with error handling"""
     try:
-        with open(SETTINGS_FILE, 'w') as f:
+        # Validate input
+        if not isinstance(settings, dict):
+            raise ValueError("Settings must be a dictionary")
+        
+        # Write to temporary file first
+        temp_file = f"{SETTINGS_FILE}.tmp"
+        with open(temp_file, 'w') as f:
             json.dump(settings, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, SETTINGS_FILE)
         return True
-    except Exception:
+    except (OSError, PermissionError) as e:
+        print(f"\033[91m❌ Cannot save settings: {e}\033[0m")
+        return False
+    except Exception as e:
+        print(f"\033[91m❌ Unexpected error saving settings: {e}\033[0m")
+        # Clean up temp file if it exists
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
         return False
 
 def load_favorites():
-    """Load favorite models from file"""
+    """Load favorite models from file with error recovery"""
     try:
         if os.path.exists(FAVORITES_FILE):
             with open(FAVORITES_FILE, 'r') as f:
-                return json.load(f)
+                favorites = json.load(f)
+                # Validate structure
+                if not isinstance(favorites, list):
+                    raise ValueError("Favorites file contains invalid data structure (expected list)")
+                # Validate each item is a string
+                favorites = [str(fav) for fav in favorites if fav]
+                return favorites
         return []
-    except Exception:
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  Favorites file corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{FAVORITES_FILE}.backup"
+            if os.path.exists(FAVORITES_FILE):
+                os.rename(FAVORITES_FILE, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return []
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read favorites file: {e}. Starting with empty list.\033[0m")
+        return []
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading favorites: {e}. Starting with empty list.\033[0m")
         return []
 
 def save_favorites(favorites):
-    """Save favorite models to file"""
+    """Save favorite models to file with error handling"""
     try:
-        with open(FAVORITES_FILE, 'w') as f:
+        # Validate input
+        if not isinstance(favorites, list):
+            raise ValueError("Favorites must be a list")
+        
+        # Ensure all items are strings
+        favorites = [str(fav) for fav in favorites if fav]
+        
+        # Write to temporary file first
+        temp_file = f"{FAVORITES_FILE}.tmp"
+        with open(temp_file, 'w') as f:
             json.dump(favorites, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, FAVORITES_FILE)
         return True
-    except Exception:
+    except (OSError, PermissionError) as e:
+        print(f"\033[91m❌ Cannot save favorites: {e}\033[0m")
+        return False
+    except Exception as e:
+        print(f"\033[91m❌ Unexpected error saving favorites: {e}\033[0m")
+        # Clean up temp file if it exists
+        try:
+            temp_file = f"{FAVORITES_FILE}.tmp"
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
         return False
 
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
