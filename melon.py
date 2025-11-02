@@ -624,14 +624,16 @@ def main():
     
     # Load persisted conversation history
     loaded_history = load_history()
-    if loaded_history and len(loaded_history) > 0:
+    if loaded_history:
         # Verify the first message is a system message, if not prepend it
         if loaded_history[0].get("role") != "system":
             messages = [system_message] + loaded_history
         else:
             # Replace the old system message with the current one
             messages = [system_message] + loaded_history[1:]
-        print(f"\033[92m✓ Loaded {len(loaded_history)} messages from history\033[0m\n")
+        # Calculate actual conversation messages (excluding system message)
+        conversation_count = len([m for m in messages if m.get("role") != "system"])
+        print(f"\033[92m✓ Loaded {conversation_count} conversation messages from history\033[0m\n")
     else:
         messages = [system_message]
 
