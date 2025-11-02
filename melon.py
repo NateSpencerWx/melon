@@ -305,6 +305,63 @@ def rename_chat(old_name, new_name):
     except Exception as e:
         return False, f"Error renaming chat: {e}"
 
+def generate_chat_name(messages, client):
+    """
+    Use AI to generate a descriptive name for a chat based on its messages.
+    Returns a short, descriptive name (2-4 words max).
+    """
+    try:
+        # Get the first few user messages to understand the topic
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
+        if not user_messages:
+            # Fallback to timestamp-based name
+            import time
+            return f"chat-{int(time.time())}"
+        
+        # Use the first 1-3 user messages to determine topic
+        context = " ".join([msg.get("content", "")[:100] for msg in user_messages[:3]])
+        
+        response = client.chat.completions.create(
+            model=SAFETY_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a chat naming assistant. Generate a short, descriptive name (2-4 words max) for a conversation based on its content. "
+                        "The name should be lowercase with hyphens, like 'python-help', 'work-project', or 'vacation-planning'. "
+                        "Only respond with the name, nothing else."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Generate a short name for a conversation about: {context}"
+                }
+            ],
+            max_tokens=20
+        )
+        
+        # Clean up the response
+        name = response.choices[0].message.content.strip().lower()
+        # Remove any quotes, extra spaces, and ensure it's a valid filename
+        name = name.replace('"', '').replace("'", '').replace(' ', '-')
+        # Remove any invalid characters
+        import re
+        name = re.sub(r'[^a-z0-9\-]', '', name)
+        # Limit length
+        name = name[:50]
+        
+        # Ensure uniqueness
+        chats = list_chats()
+        if name in chats:
+            import time
+            name = f"{name}-{int(time.time()) % 10000}"
+        
+        return name if name else f"chat-{int(time.time())}"
+    except Exception as e:
+        # Fallback to timestamp-based name
+        import time
+        return f"chat-{int(time.time())}"
+
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
     Use AI to determine if a command modifies the system and get a description.
@@ -743,7 +800,7 @@ def display_status(console, current_model, settings):
         f"[bold cyan]Reasoning[/bold cyan]: {reasoning_label}"
     )
     console.print(
-        "[dim]Shortcuts: /chat manage chats · /m switch model · /r toggle reasoning · /clear reset current chat[/dim]"
+        "[dim]Shortcuts: /new create chat · /chat switch chat · /clear reset chat[/dim]"
     )
     console.print("")
 
@@ -873,7 +930,7 @@ def main():
     else:
         messages = [system_message]
 
-    print("\033[96m💡 Type your request in natural language. Use '/chat' to manage chats, '/m' to switch models, '/r' to toggle reasoning, '/clear' to reset, and ^C to leave.\033[0m")
+    print("\033[96m💡 Type your request in natural language. Use '/new' for new chat, '/chat' to switch chats, '/clear' to reset, and ^C to leave.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     while True:
         try:
@@ -901,11 +958,81 @@ def main():
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
-            # Check for chat management command
+            # Check for new chat command
+            if lowered_input in {"/new", "new"}:
+                # Generate chat name based on current context or create empty
+                if len(messages) > 1:  # Has some conversation
+                    console.print("\n[cyan]Creating new chat...[/cyan]")
+                    # Generate name based on current conversation
+                    chat_name = generate_chat_name(messages, client)
+                    console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                    
+                    # Save current conversation to the new chat
+                    save_history(messages[1:], chat_name)
+                    console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
+                else:
+                    # No conversation yet, just create timestamp-based chat
+                    import time
+                    chat_name = f"chat-{int(time.time())}"
+                    save_history([], chat_name)
+                    console.print(f"[green]✓ Created new chat: {chat_name}[/green]")
+                
+                # Switch to the new chat
+                settings["active_chat"] = chat_name
+                save_settings(settings)
+                active_chat = chat_name
+                
+                # Reset messages for new conversation
+                messages = [system_message]
+                console.print("[cyan]Starting fresh conversation in new chat[/cyan]")
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            # Check for chat management/switching command
             if lowered_input in {"chat", "/chat", "/chats"}:
-                settings = handle_chat_management(console, settings)
-                # Update active_chat in case it changed
-                active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
+                chats = list_chats()
+                if len(chats) <= 1:
+                    console.print("[yellow]Only one chat exists. Use /new to create another.[/yellow]")
+                    print("\033[90m" + "─" * 60 + "\033[0m\n")
+                    continue
+                
+                # Show list of chats for quick switching
+                console.print("\n[cyan]💬 Available Chats:[/cyan]")
+                for i, chat in enumerate(chats, 1):
+                    marker = " ← current" if chat == active_chat else ""
+                    history = load_history(chat)
+                    msg_count = len(history)
+                    console.print(f"  [{i}] {chat} ({msg_count} messages){marker}")
+                
+                console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+                choice = input("\033[95m> \033[0m").strip()
+                
+                if choice.isdigit():
+                    chat_idx = int(choice) - 1
+                    if 0 <= chat_idx < len(chats):
+                        selected_chat = chats[chat_idx]
+                        if selected_chat != active_chat:
+                            # Save current chat before switching
+                            save_history(messages[1:], active_chat)
+                            
+                            # Switch to selected chat
+                            settings["active_chat"] = selected_chat
+                            save_settings(settings)
+                            active_chat = selected_chat
+                            
+                            # Load the selected chat history
+                            loaded_history = load_history(active_chat)
+                            if loaded_history:
+                                messages = [system_message] + loaded_history
+                            else:
+                                messages = [system_message]
+                            
+                            console.print(f"[green]✓ Switched to '{active_chat}' ({len(loaded_history)} messages)[/green]")
+                        else:
+                            console.print("[yellow]Already on that chat[/yellow]")
+                    else:
+                        console.print("[red]Invalid selection[/red]")
+                
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
