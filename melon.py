@@ -28,6 +28,26 @@ LOGO = """
 DEFAULT_MODEL = "x-ai/grok-4-fast"
 SAFETY_MODEL = "x-ai/grok-4-fast"  # Hardcoded for safety analysis
 FAVORITES_FILE = ".melon_favorites.json"
+SETTINGS_FILE = ".melon_settings.json"
+
+def load_settings():
+    """Load settings from file"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        return {"reasoning_enabled": False}  # Default settings
+    except Exception:
+        return {"reasoning_enabled": False}
+
+def save_settings(settings):
+    """Save settings to file"""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception:
+        return False
 
 def load_favorites():
     """Load favorite models from file"""
@@ -54,6 +74,7 @@ def is_command_modifying(command: str, client) -> tuple[bool, str]:
     Returns (is_modifying, description)
     """
     try:
+        # Enable reasoning for safety analysis to improve accuracy
         response = client.chat.completions.create(
             model=SAFETY_MODEL,
             messages=[
@@ -75,7 +96,7 @@ def is_command_modifying(command: str, client) -> tuple[bool, str]:
                     "content": f"Analyze this command: {command}"
                 }
             ],
-            extra_body={"reasoning": True}
+            extra_body={"reasoning": {"effort": "high"}}
         )
         
         # Parse the JSON response
@@ -278,6 +299,102 @@ def handle_model_selection(current_model, console):
     return current_model
 
 
+def process_model_command(command: str, current_model: str, console) -> str:
+    """Handle quick model switching via slash commands"""
+    favorites = load_favorites()
+    parts = command.split(maxsplit=1)
+
+    if len(parts) == 1:
+        return handle_model_selection(current_model, console)
+
+    target = parts[1].strip()
+
+    if not target:
+        return handle_model_selection(current_model, console)
+
+    if target in {"?", "list"}:
+        if favorites:
+            console.print("\n[cyan]📌 Favorite Models:[/cyan]")
+            for idx, fav in enumerate(favorites, 1):
+                console.print(f"  [{idx}] {fav}")
+        else:
+            console.print("[yellow]No favorites saved yet. Use the model menu to add some.[/yellow]")
+        return current_model
+
+    if target.isdigit():
+        fav_index = int(target) - 1
+        if 0 <= fav_index < len(favorites):
+            selected = favorites[fav_index]
+            console.print(f"[green]✓ Switched to model: {selected}[/green]")
+            return selected
+        console.print("[red]Favorite number out of range[/red]")
+        return current_model
+
+    console.print(f"[green]✓ Switched to model: {target}[/green]")
+    return target
+
+
+def toggle_reasoning(settings: dict, console, target_state: str | None = None) -> dict:
+    """Toggle reasoning setting with optional explicit on/off control"""
+    current_state = settings.get("reasoning_enabled", False)
+
+    if target_state in {"on", "enable", "enabled"}:
+        new_state = True
+    elif target_state in {"off", "disable", "disabled"}:
+        new_state = False
+    else:
+        new_state = not current_state
+
+    settings["reasoning_enabled"] = new_state
+    if save_settings(settings):
+        status_word = "enabled" if new_state else "disabled"
+        console.print(f"[green]✓ Reasoning {status_word}[/green]")
+    else:
+        console.print("[red]Failed to save settings[/red]")
+    return settings
+
+
+def display_status(console, current_model, settings):
+    """Show the current model and reasoning status with quick command hints"""
+    reasoning_on = settings.get("reasoning_enabled", False)
+    reasoning_label = "[green]ON[/green]" if reasoning_on else "[red]OFF[/red]"
+    console.print(
+        f"[bold cyan]Model[/bold cyan]: {current_model}    "
+        f"[bold cyan]Reasoning[/bold cyan]: {reasoning_label}"
+    )
+    console.print(
+        "[dim]Shortcuts: /m (model favorite #) switch model · /r (on|off) toggle reasoning · /clear reset history[/dim]"
+    )
+    console.print("")
+
+
+def handle_settings(console):
+    """Handle the settings interface"""
+    settings = load_settings()
+    
+    console.print("\n[cyan]⚙️  Settings[/cyan]")
+    console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
+    console.print("[dim]Tip: You can also use '/r on' or '/r off' at the main prompt for instant changes.[/dim]")
+    console.print("\n[cyan]Options:[/cyan]")
+    console.print("  [1] Toggle reasoning (enable extended thinking for complex queries)")
+    console.print("  [2] Cancel")
+    
+    choice = input("\n\033[95mSelect an option: \033[0m").strip()
+    
+    if choice == "1":
+        settings = toggle_reasoning(settings, console)
+    
+    elif choice == "2":
+        # Cancel
+        console.print("[yellow]Cancelled[/yellow]")
+    
+    else:
+        console.print("[red]Invalid option[/red]")
+    
+    console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
+    return settings
+
+
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -289,6 +406,8 @@ def main():
         print("\n📋 To get started:")
         print("   1. Sign up at: \033[94mhttps://openrouter.ai/\033[0m")
         print("   2. Get your API key from: \033[94mhttps://openrouter.ai/keys\033[0m")
+        print("")
+        print(" 💡You can use credits from other API providers with OpenRouter: \033[94mhttps://openrouter.ai/docs/use-cases/byok\033[0m")
         print()
         while True:
             api_key = input("🔑 Enter your OpenRouter API key: ").strip()
@@ -336,8 +455,9 @@ def main():
     # Create tools map with access to client and console
     tools_map = create_tools_map(client, console)
 
-    # Initialize current model
+    # Initialize current model and settings
     current_model = DEFAULT_MODEL
+    settings = load_settings()
 
     # Initialize conversation history with system message
     system_message = {
@@ -355,22 +475,46 @@ def main():
     }
     messages = [system_message]
 
-    print("\033[96m💡 Type your request in natural language. Type '/clear' to reset conversation history, 'model' to change models, and ^C to leave.\033[0m")
+    print("\033[96m💡 Type your request in natural language. Use '/m' to switch models, '/r' to toggle reasoning, '/clear' to reset, and ^C to leave.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     while True:
         try:
+            display_status(console, current_model, settings)
             user_input = input("\033[95m🍉 \033[0m").strip()
             if not user_input:
                 continue
 
-            # Check for model selection command
-            if user_input.lower() == "model":
-                current_model = handle_model_selection(current_model, console)
+            # Check for quick commands
+            lowered_input = user_input.lower()
+
+            if lowered_input in {"model", "/model"}:
+                current_model = process_model_command("/m", current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            if lowered_input.startswith("/m"):
+                current_model = process_model_command(user_input, current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            # Check for settings command
+            if lowered_input in {"settings", "/settings"}:
+                settings = handle_settings(console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+
+            # Quick reasoning toggle command
+            if lowered_input in {"/r", "/reason", "/reasoning"} or lowered_input.startswith("/r "):
+                target_state = None
+                parts = user_input.split(maxsplit=1)
+                if len(parts) > 1:
+                    target_state = parts[1].strip().lower()
+                settings = toggle_reasoning(settings, console, target_state)
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
             # Check for clear command
-            if user_input.lower() in ["/clear", "clear", "clear history", "reset"]:
+            if lowered_input in ["clear"]:
                 print("\033[92m🧹 Conversation history cleared. Starting fresh!\033[0m")
                 messages = [system_message]
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
@@ -388,12 +532,18 @@ def main():
                 iteration = 0
                 
                 while iteration < max_iterations:
-                    response = client.chat.completions.create(
-                        model=current_model,
-                        messages=messages,
-                        tools=[tool_definition],
-                        extra_body={"reasoning": True}
-                    )
+                    # Build API call parameters
+                    api_params = {
+                        "model": current_model,
+                        "messages": messages,
+                        "tools": [tool_definition]
+                    }
+                    
+                    # Add reasoning if enabled
+                    if settings.get('reasoning_enabled', False):
+                        api_params["extra_body"] = {"reasoning": {"effort": "high"}}
+                    
+                    response = client.chat.completions.create(**api_params)
                     
                     assistant_message = response.choices[0].message
                     
