@@ -5,9 +5,7 @@ Melon is a CLI tool that uses OpenRouter's AI models to interpret your requests 
 
 ## Installation
 
-1. Clone this repository.
-2. Install dependencies: `pip install -r requirements.txt`
-3. Run: `python melon.py` or `./melon.py` (after making executable)
+Ask the AI here to help you install Melon on your computer: https://www.perplexity.ai/spaces/melon-install-helper-KsasUoP0QS6ZBZVh2mFw4A#0
 
 On first run, it will prompt for your OpenRouter API key if not found in `.env`.
 
