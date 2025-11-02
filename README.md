@@ -13,7 +13,7 @@ Get your API key from: https://openrouter.ai/keys
 
 ## Usage
 
-Run Melon and type what you want to do, e.g., "list files in current directory", "create a new folder called test", etc.
+Run Melon and type what you want to do, e.g., "list files in current directory", "create a new folder called test", "What is the weather at my location", etc.
 
 Melon will suggest a command, review it for safety, and execute it if verified safe or after confirmation if it thinks you may want to review it yourself first.
 
