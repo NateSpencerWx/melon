@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Table
+from rich.layout import Layout
+from prompt_toolkit import prompt
+from prompt_toolkit.shortcuts import radiolist_dialog, button_dialog
+from prompt_toolkit.styles import Style
 
 LOGO = """
 ╔═══════════════════════════════════════════════════════════╗
@@ -832,6 +838,74 @@ def handle_settings(console):
     return settings
 
 
+def show_visual_menu(console, settings, active_chat):
+    """Show visual interactive menu for actions"""
+    chats = list_chats()
+    
+    # Create menu options
+    choices = [
+        ('new_chat', '🆕 Create New Chat (AI will name it)'),
+        ('switch_chat', f'💬 Switch Chat (Current: {active_chat})'),
+        ('clear_chat', '🧹 Clear Current Chat'),
+        ('continue', '💭 Continue Conversation'),
+    ]
+    
+    try:
+        result = radiolist_dialog(
+            title="Melon - Chat Actions",
+            text="Use ↑↓ arrow keys to navigate, Enter to select:",
+            values=choices,
+            style=Style.from_dict({
+                'dialog': 'bg:#1a1a1a',
+                'dialog.body': 'bg:#1a1a1a #00ff00',
+                'dialog shadow': 'bg:#000000',
+                'radio-list': 'bg:#1a1a1a',
+                'radio-checked': 'fg:#00ff00 bold',
+                'radio': 'fg:#888888',
+            })
+        ).run()
+        
+        return result
+    except Exception:
+        # Fallback if dialog fails
+        return 'continue'
+
+
+def show_chat_selector(console, settings, active_chat):
+    """Show visual chat selector dialog"""
+    chats = list_chats()
+    
+    if len(chats) <= 1:
+        console.print("[yellow]Only one chat exists. Create a new one first.[/yellow]")
+        return active_chat
+    
+    # Create chat selection options
+    choices = []
+    for chat_name in chats:
+        history = load_history(chat_name)
+        msg_count = len(history)
+        marker = " ← current" if chat_name == active_chat else ""
+        choices.append((chat_name, f"{chat_name} ({msg_count} messages){marker}"))
+    
+    try:
+        result = radiolist_dialog(
+            title="Switch Chat",
+            text="Select a chat to switch to:",
+            values=choices,
+            style=Style.from_dict({
+                'dialog': 'bg:#1a1a1a',
+                'dialog.body': 'bg:#1a1a1a #00ff00',
+                'radio-list': 'bg:#1a1a1a',
+                'radio-checked': 'fg:#00ff00 bold',
+                'radio': 'fg:#888888',
+            })
+        ).run()
+        
+        return result if result else active_chat
+    except Exception:
+        return active_chat
+
+
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -930,16 +1004,88 @@ def main():
     else:
         messages = [system_message]
 
-    print("\033[96m💡 Type your request in natural language. Use '/new' for new chat, '/chat' to switch chats, '/clear' to reset, and ^C to leave.\033[0m")
+    print("\033[96m💡 Press Ctrl+M to open the menu, or type your request naturally. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     while True:
         try:
             display_status(console, current_model, settings)
+            
+            # Show a prompt that indicates menu availability
+            console.print("[dim]Press [bold]Ctrl+M[/bold] for menu or type your message...[/dim]")
             user_input = input("\033[95m🍉 \033[0m").strip()
+            
+            # Check if user wants to open the menu (special trigger)
+            if user_input.lower() in {"/menu", "menu", "m"}:
+                # Show visual menu
+                action = show_visual_menu(console, settings, active_chat)
+                
+                if action == 'new_chat':
+                    # Create new chat
+                    if len(messages) > 1:  # Has some conversation
+                        console.print("\n[cyan]Creating new chat...[/cyan]")
+                        chat_name = generate_chat_name(messages, client)
+                        console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                        save_history(messages[1:], chat_name)
+                        console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
+                    else:
+                        import time
+                        chat_name = f"chat-{int(time.time())}"
+                        save_history([], chat_name)
+                        console.print(f"[green]✓ Created new chat: {chat_name}[/green]")
+                    
+                    settings["active_chat"] = chat_name
+                    save_settings(settings)
+                    active_chat = chat_name
+                    messages = [system_message]
+                    console.print("[cyan]Starting fresh conversation in new chat[/cyan]")
+                    print("\033[90m" + "─" * 60 + "\033[0m\n")
+                    continue
+                
+                elif action == 'switch_chat':
+                    # Switch to different chat
+                    selected_chat = show_chat_selector(console, settings, active_chat)
+                    if selected_chat != active_chat:
+                        save_history(messages[1:], active_chat)
+                        settings["active_chat"] = selected_chat
+                        save_settings(settings)
+                        active_chat = selected_chat
+                        loaded_history = load_history(active_chat)
+                        if loaded_history:
+                            messages = [system_message] + loaded_history
+                        else:
+                            messages = [system_message]
+                        console.print(f"[green]✓ Switched to '{active_chat}' ({len(loaded_history)} messages)[/green]")
+                    print("\033[90m" + "─" * 60 + "\033[0m\n")
+                    continue
+                
+                elif action == 'clear_chat':
+                    # Clear current chat
+                    console.print(f"[cyan]Clear conversation in '{active_chat}'?[/cyan]")
+                    confirm = button_dialog(
+                        title='Confirm Clear',
+                        text=f"Are you sure you want to clear '{active_chat}'?",
+                        buttons=[
+                            ('Yes', True),
+                            ('No', False),
+                        ],
+                    ).run()
+                    
+                    if confirm:
+                        messages = [system_message]
+                        save_history([], active_chat)
+                        console.print(f"[green]✓ Chat '{active_chat}' cleared[/green]")
+                    print("\033[90m" + "─" * 60 + "\033[0m\n")
+                    continue
+                
+                elif action == 'continue' or action is None:
+                    # Continue with conversation
+                    print("\033[90m" + "─" * 60 + "\033[0m\n")
+                    continue
+            
             if not user_input:
                 continue
 
-            # Check for quick commands
+            # Check for legacy commands for backward compatibility
             lowered_input = user_input.lower()
 
             if lowered_input in {"model", "/model"}:
@@ -947,19 +1093,15 @@ def main():
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
-            if lowered_input.startswith("/m"):
+            # Legacy command support (still works but menu is preferred)
+            if lowered_input.startswith("/m") and lowered_input not in {"/menu", "menu"}:
                 current_model = process_model_command(user_input, current_model, console)
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
-            # Check for settings command
-            if lowered_input in {"settings", "/settings"}:
-                settings = handle_settings(console)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Check for new chat command
+            # Legacy new chat command
             if lowered_input in {"/new", "new"}:
+                console.print("[yellow]Tip: You can also use 'menu' to access visual options[/yellow]")
                 # Generate chat name based on current context or create empty
                 if len(messages) > 1:  # Has some conversation
                     console.print("\n[cyan]Creating new chat...[/cyan]")
@@ -988,11 +1130,12 @@ def main():
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
 
-            # Check for chat management/switching command
+            # Legacy chat switching command
             if lowered_input in {"chat", "/chat", "/chats"}:
+                console.print("[yellow]Tip: You can also use 'menu' for visual selection[/yellow]")
                 chats = list_chats()
                 if len(chats) <= 1:
-                    console.print("[yellow]Only one chat exists. Use /new to create another.[/yellow]")
+                    console.print("[yellow]Only one chat exists. Type 'menu' then select 'Create New Chat'.[/yellow]")
                     print("\033[90m" + "─" * 60 + "\033[0m\n")
                     continue
                 
