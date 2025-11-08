@@ -1226,9 +1226,8 @@ def main():
                 if user_message_count >= 1:  # At least one user message
                     success, new_name, rename_msg = dynamic_rename_chat(messages[1:], client, active_chat, settings)
                     if success:
-                        # Update active_chat reference
+                        # Update active_chat reference (rename happens silently)
                         active_chat = new_name
-                        console.print(f"[dim]💡 Chat renamed to: {new_name}[/dim]")
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
