@@ -311,21 +311,27 @@ def rename_chat(old_name, new_name):
     except Exception as e:
         return False, f"Error renaming chat: {e}"
 
-def generate_chat_name(messages, client):
+def generate_chat_name(messages, client, current_name=None):
     """
     Use AI to generate a descriptive name for a chat based on its messages.
     Returns a short, descriptive name (2-4 words max).
+    For dynamic renaming, uses recent messages to reflect current conversation topic.
     """
     try:
-        # Get the first few user messages to understand the topic
+        # Get user messages to understand the topic
         user_messages = [msg for msg in messages if msg.get("role") == "user"]
         if not user_messages:
             # Fallback to timestamp-based name
             import time
             return f"chat-{int(time.time())}"
         
-        # Use the first 1-3 user messages to determine topic
-        context = " ".join([msg.get("content", "")[:100] for msg in user_messages[:3]])
+        # For dynamic renaming, focus on recent messages to capture topic evolution
+        # Use last 3-5 user messages for better context of current conversation
+        recent_count = min(5, len(user_messages))
+        recent_messages = user_messages[-recent_count:]
+        
+        # Build context from recent messages
+        context = " ".join([msg.get("content", "")[:150] for msg in recent_messages])
         
         response = client.chat.completions.create(
             model=SAFETY_MODEL,
@@ -335,6 +341,7 @@ def generate_chat_name(messages, client):
                     "content": (
                         "You are a chat naming assistant. Generate a short, descriptive name (2-4 words max) for a conversation based on its content. "
                         "The name should be lowercase with hyphens, like 'python-help', 'work-project', or 'vacation-planning'. "
+                        "Focus on the main topic of the conversation. "
                         "Only respond with the name, nothing else."
                     )
                 },
@@ -356,17 +363,58 @@ def generate_chat_name(messages, client):
         # Limit length
         name = name[:50]
         
-        # Ensure uniqueness
-        chats = list_chats()
-        if name in chats:
-            import time
-            name = f"{name}-{int(time.time()) % 10000}"
+        # Don't check uniqueness if we're renaming the current chat
+        # (the current name will be freed up)
+        if current_name != name:
+            chats = list_chats()
+            # Remove current_name from the list if it exists (we're renaming it)
+            if current_name and current_name in chats:
+                chats = [c for c in chats if c != current_name]
+            
+            if name in chats:
+                import time
+                name = f"{name}-{int(time.time()) % 10000}"
         
         return name if name else f"chat-{int(time.time())}"
     except Exception as e:
         # Fallback to timestamp-based name
         import time
         return f"chat-{int(time.time())}"
+
+def dynamic_rename_chat(messages, client, current_chat, settings):
+    """
+    Dynamically rename a chat based on the current conversation.
+    Returns (success, new_name, message)
+    """
+    # Don't rename the default chat
+    if current_chat == DEFAULT_CHAT_NAME:
+        return False, current_chat, "Default chat cannot be renamed"
+    
+    try:
+        # Generate a new name based on current conversation
+        new_name = generate_chat_name(messages, client, current_name=current_chat)
+        
+        # If the name hasn't changed significantly, don't rename
+        if new_name == current_chat:
+            return False, current_chat, "Chat name unchanged"
+        
+        # Rename the chat file
+        old_file = get_chat_file(current_chat)
+        new_file = get_chat_file(new_name)
+        
+        if os.path.exists(old_file):
+            os.rename(old_file, new_file)
+            
+            # Update settings to reflect new name
+            settings["active_chat"] = new_name
+            save_settings(settings)
+            
+            return True, new_name, f"Chat renamed from '{current_chat}' to '{new_name}'"
+        else:
+            return False, current_chat, f"Chat file not found"
+    
+    except Exception as e:
+        return False, current_chat, f"Error during dynamic rename: {e}"
 
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
@@ -1171,6 +1219,16 @@ def main():
                 # Save conversation history after each successful interaction
                 # Skip the system message when saving (it's always added on load)
                 save_history(messages[1:], active_chat)
+                
+                # Dynamic chat renaming: rename chat based on evolving conversation
+                # Only rename if there are actual user messages (not just system/tool messages)
+                user_message_count = len([m for m in messages if m.get("role") == "user"])
+                if user_message_count >= 1:  # At least one user message
+                    success, new_name, rename_msg = dynamic_rename_chat(messages[1:], client, active_chat, settings)
+                    if success:
+                        # Update active_chat reference
+                        active_chat = new_name
+                        console.print(f"[dim]💡 Chat renamed to: {new_name}[/dim]")
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
