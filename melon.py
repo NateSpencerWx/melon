@@ -10,7 +10,9 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.layout import Layout
-# Removed prompt_toolkit - using keyboard shortcuts instead
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import ANSI
 
 LOGO = """
 ╔═══════════════════════════════════════════════════════════╗
@@ -841,6 +843,33 @@ def handle_chat_management(console, settings):
     return settings
 
 
+def create_input_session():
+    """Create a prompt session with Ctrl key bindings"""
+    kb = KeyBindings()
+    
+    # Store action that was triggered
+    class KeyAction:
+        action = None
+    
+    @kb.add('c-n')  # Ctrl+N for new chat
+    def _(event):
+        KeyAction.action = 'new_chat'
+        event.app.exit(result='__CTRL_N__')
+    
+    @kb.add('c-m')  # Ctrl+M for model selection
+    def _(event):
+        KeyAction.action = 'model'
+        event.app.exit(result='__CTRL_M__')
+    
+    @kb.add('c-r')  # Ctrl+R for reasoning toggle
+    def _(event):
+        KeyAction.action = 'reasoning'
+        event.app.exit(result='__CTRL_R__')
+    
+    session = PromptSession(key_bindings=kb)
+    return session, KeyAction
+
+
 def display_status(console, current_model, settings):
     """Show the current model and reasoning status with quick command hints"""
     reasoning_on = settings.get("reasoning_enabled", False)
@@ -979,28 +1008,29 @@ def main():
     else:
         messages = [system_message]
 
-    print("\033[96m💡 Use /new for new chat, /chat to switch, /m for model, /r for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^M for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
+    
+    # Create prompt session with key bindings
+    session, key_action = create_input_session()
+    
     while True:
         try:
             display_status(console, current_model, settings)
             
-            user_input = input("\033[95m🍉 \033[0m").strip()
+            # Use prompt_toolkit session for input with key bindings
+            try:
+                user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
+            except KeyboardInterrupt:
+                print("\n\033[91m👋 Goodbye!\033[0m")
+                break
+            except EOFError:
+                print("\n\033[91m👋 Goodbye!\033[0m")
+                break
             
-            if not user_input:
-                continue
-
-            lowered_input = user_input.lower()
-
-            # Check for model switching command
-            if lowered_input.startswith("/m"):
-                current_model = process_model_command(user_input, current_model, console)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Check for /new command to create a new chat
-            if lowered_input in {"/new", "new"}:
-                # Generate chat name based on current context or create empty
+            # Check if a keyboard shortcut was triggered
+            if user_input == '__CTRL_N__':
+                # Ctrl+N - Create new chat
                 if len(messages) > 1:  # Has some conversation
                     console.print("\n[cyan]Creating new chat...[/cyan]")
                     # Generate name based on current conversation
@@ -1027,74 +1057,21 @@ def main():
                 console.print("[cyan]Starting fresh conversation in new chat[/cyan]")
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
-
-            # Check for chat management/switching command
-            if lowered_input in {"chat", "/chat", "/chats"}:
-                chats = list_chats()
-                if len(chats) <= 1:
-                    console.print("[yellow]Only one chat exists. Use /new to create another.[/yellow]")
-                    print("\033[90m" + "─" * 60 + "\033[0m\n")
-                    continue
                 
-                # Show list of chats for quick switching
-                console.print("\n[cyan]💬 Available Chats:[/cyan]")
-                for i, chat in enumerate(chats, 1):
-                    marker = " ← current" if chat == active_chat else ""
-                    history = load_history(chat)
-                    msg_count = len(history)
-                    console.print(f"  [{i}] {chat} ({msg_count} messages){marker}")
-                
-                console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
-                choice = input("\033[95m> \033[0m").strip()
-                
-                if choice.isdigit():
-                    chat_idx = int(choice) - 1
-                    if 0 <= chat_idx < len(chats):
-                        selected_chat = chats[chat_idx]
-                        if selected_chat != active_chat:
-                            # Save current chat before switching
-                            save_history(messages[1:], active_chat)
-                            
-                            # Switch to selected chat
-                            settings["active_chat"] = selected_chat
-                            save_settings(settings)
-                            active_chat = selected_chat
-                            
-                            # Load the selected chat history
-                            loaded_history = load_history(active_chat)
-                            if loaded_history:
-                                messages = [system_message] + loaded_history
-                            else:
-                                messages = [system_message]
-                            
-                            console.print(f"[green]✓ Switched to '{active_chat}' ({len(loaded_history)} messages)[/green]")
-                        else:
-                            console.print("[yellow]Already on that chat[/yellow]")
-                    else:
-                        console.print("[red]Invalid selection[/red]")
-                
+            elif user_input == '__CTRL_M__':
+                # Ctrl+M - Model selection
+                current_model = handle_model_selection(current_model, console)
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
-
-            # Check for reasoning toggle
-            if lowered_input in {"/r", "/reason", "/reasoning"} or lowered_input.startswith("/r "):
-                target_state = None
-                parts = user_input.split(maxsplit=1)
-                if len(parts) > 1:
-                    target_state = parts[1].strip().lower()
-                settings = toggle_reasoning(settings, console, target_state)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Check for clear command
-            if lowered_input in ["clear", "/clear"]:
-                print(f"\033[92m🧹 Conversation history for '{active_chat}' cleared. Starting fresh!\033[0m")
-                messages = [system_message]
-                # Clear persisted history for active chat
-                save_history([], active_chat)
+                
+            elif user_input == '__CTRL_R__':
+                # Ctrl+R - Toggle reasoning
+                settings = toggle_reasoning(settings, console)
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
             
+            if not user_input:
+                continue
 
             print("\n\033[93mThinking...\033[0m")
 
