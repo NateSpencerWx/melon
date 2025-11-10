@@ -856,10 +856,10 @@ def create_input_session():
         KeyAction.action = 'new_chat'
         event.app.exit(result='__CTRL_N__')
     
-    @kb.add('c-m')  # Ctrl+M for model selection
+    @kb.add('c-o')  # Ctrl+O for model selection (changed from Ctrl+M which conflicts with Enter)
     def _(event):
         KeyAction.action = 'model'
-        event.app.exit(result='__CTRL_M__')
+        event.app.exit(result='__CTRL_O__')
     
     @kb.add('c-r')  # Ctrl+R for reasoning toggle
     def _(event):
@@ -1008,7 +1008,7 @@ def main():
     else:
         messages = [system_message]
 
-    print("\033[96m💡 Use ^N for new chat, ^M for model, ^R for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
@@ -1058,8 +1058,8 @@ def main():
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
                 
-            elif user_input == '__CTRL_M__':
-                # Ctrl+M - Model selection
+            elif user_input == '__CTRL_O__':
+                # Ctrl+O - Model selection
                 current_model = handle_model_selection(current_model, console)
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
