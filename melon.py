@@ -1054,7 +1054,7 @@ def main():
                     max_tokens=10
                 )
                 if "OK" not in test_response.choices[0].message.content:
-                    raise Exception("Test API call failed")
+                    raise Exception(f"Test API call validation failed - received unexpected response: {test_response.choices[0].message.content}")
                 break  # Valid key, exit loop
             except Exception as e:
                 print(f"\033[91m❌ Invalid API key: {e}\033[0m")
