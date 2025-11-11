@@ -9,8 +9,6 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.table import Table
-from rich.layout import Layout
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import ANSI
