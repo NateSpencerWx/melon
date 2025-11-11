@@ -39,7 +39,7 @@ FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
 CHATS_DIR = ".melon_chats"
 DEFAULT_CHAT_NAME = "default"
-CURRENT_VERSION = "0.2.0"
+CURRENT_VERSION = "0.2.1"
 GITHUB_REPO = "NateSpencerWx/melon"
 
 def parse_version(version_string):
@@ -1021,12 +1021,12 @@ def main():
     console = Console()
     
     # Check for updates on startup
-    has_update, latest_version, error = check_for_updates()
-    if has_update and latest_version:
-        display_update_notification(latest_version)
-    elif not has_update and latest_version and not error:
+    has_update, latest_, error = check_for_updates()
+    if has_update and latest_:
+        display_update_notification(latest_)
+    elif not has_update and latest_ and not error:
         # Successfully checked and no update available
-        print("\033[92m✓ Melon is up to date (version {0})\033[0m\n".format(CURRENT_VERSION))
+        print("\033[92m✓ Melon is up to date ( {0})\033[0m\n".format(CURRENT_))
     
     load_dotenv()
     api_key = os.getenv('OPENROUTER_API_KEY')
