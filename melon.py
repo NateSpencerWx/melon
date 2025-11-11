@@ -279,8 +279,8 @@ def load_history(chat_name=None):
             if os.path.exists(chat_file):
                 os.rename(chat_file, backup_file)
                 print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
-        except Exception:
-            pass
+        except Exception as backup_error:
+            print(f"\033[93m⚠️  Failed to back up corrupted chat file '{chat_file}': {backup_error}\033[0m")
         return []
     except (OSError, PermissionError) as e:
         print(f"\033[93m⚠️  Cannot read chat '{chat_name}': {e}. Starting with empty history.\033[0m")
