@@ -866,6 +866,11 @@ def create_input_session():
         KeyAction.action = 'reasoning'
         event.app.exit(result='__CTRL_R__')
     
+    @kb.add('c-s')  # Ctrl+S for switching chats
+    def _(event):
+        KeyAction.action = 'switch_chat'
+        event.app.exit(result='__CTRL_S__')
+    
     session = PromptSession(key_bindings=kb)
     return session, KeyAction
 
@@ -907,6 +912,54 @@ def handle_settings(console):
     
     console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
     return settings
+
+
+def handle_chat_switch(console, settings, current_chat):
+    """Handle switching between chats"""
+    chats = list_chats()
+    
+    if not chats:
+        console.print("[yellow]No chats available[/yellow]")
+        return current_chat
+    
+    console.print("\n[cyan]💬 Available Chats:[/cyan]")
+    for i, chat in enumerate(chats, 1):
+        # Load history to get message count
+        history = load_history(chat)
+        msg_count = len(history)
+        current_marker = " ← current" if chat == current_chat else ""
+        console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
+    
+    console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+    choice = input("\033[95m> \033[0m").strip()
+    
+    if not choice:
+        console.print("[yellow]Cancelled[/yellow]")
+        return current_chat
+    
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(chats):
+            selected_chat = chats[idx]
+            if selected_chat != current_chat:
+                # Update settings
+                settings["active_chat"] = selected_chat
+                save_settings(settings)
+                
+                # Load history count for display
+                history = load_history(selected_chat)
+                msg_count = len(history)
+                console.print(f"[green]✓ Switched to '{selected_chat}' ({msg_count} messages)[/green]")
+                return selected_chat
+            else:
+                console.print("[yellow]Already in this chat[/yellow]")
+                return current_chat
+        else:
+            console.print("[red]Invalid selection[/red]")
+            return current_chat
+    except ValueError:
+        console.print("[red]Invalid input[/red]")
+        return current_chat
 
 
 
@@ -1008,7 +1061,7 @@ def main():
     else:
         messages = [system_message]
 
-    print("\033[96m💡 Use ^N for new chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
@@ -1067,6 +1120,26 @@ def main():
             elif user_input == '__CTRL_R__':
                 # Ctrl+R - Toggle reasoning
                 settings = toggle_reasoning(settings, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+                
+            elif user_input == '__CTRL_S__':
+                # Ctrl+S - Switch chat
+                new_chat = handle_chat_switch(console, settings, active_chat)
+                if new_chat != active_chat:
+                    # Load the new chat's history
+                    active_chat = new_chat
+                    loaded_history = load_history(active_chat)
+                    
+                    # Merge with system message
+                    if loaded_history and loaded_history[0].get("role") != "system":
+                        messages = [system_message] + loaded_history
+                    else:
+                        # Replace old system message with current one
+                        messages = [system_message] + loaded_history[1:] if loaded_history else [system_message]
+                    
+                    console.print(f"[cyan]Loaded {len([m for m in messages if m.get('role') != 'system'])} messages[/cyan]")
+                
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
             
