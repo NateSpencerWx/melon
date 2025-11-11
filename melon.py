@@ -901,7 +901,7 @@ def create_input_session():
         KeyAction.action = 'new_chat'
         event.app.exit(result='__CTRL_N__')
     
-    @kb.add('c-o')  # Ctrl+O for model selection (changed from Ctrl+M which conflicts with Enter)
+    @kb.add('c-o')  # Ctrl+O for model selection
     def _(event):
         KeyAction.action = 'model'
         event.app.exit(result='__CTRL_O__')
