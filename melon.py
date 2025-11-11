@@ -148,6 +148,7 @@ def save_settings(settings):
         print(f"\033[91m❌ Unexpected error saving settings: {e}\033[0m")
         # Clean up temp file if it exists
         try:
+            temp_file = f"{SETTINGS_FILE}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         except Exception:
