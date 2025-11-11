@@ -1024,6 +1024,9 @@ def main():
     has_update, latest_version, error = check_for_updates()
     if has_update and latest_version:
         display_update_notification(latest_version)
+    elif not has_update and latest_version and not error:
+        # Successfully checked and no update available
+        print("\033[92m✓ Melon is up to date (version {0})\033[0m\n".format(CURRENT_VERSION))
     
     load_dotenv()
     api_key = os.getenv('OPENROUTER_API_KEY')
