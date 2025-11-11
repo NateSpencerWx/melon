@@ -84,12 +84,8 @@ def check_for_updates():
 
 def display_update_notification(latest_version):
     """Display a notification about available update."""
-    print(f"\033[93m\033[0m")
-    print(f"\033[93m 🎉 A new version of Melon is available: {CURRENT_VERSION} -> {latest_version} \033[0m")
-    print(f"\033[93m                                                           \033[0m")
-    print(f"\033[93m  To update, run:                                          \033[0m")
-    print(f"\033[93m  pip install --upgrade git+https://github.com/{GITHUB_REPO}.git  ║\033[0m")
-    print(f"\033[93m\033[0m\n")
+    print(f"\033[93m🎉 A new version of Melon is available: {CURRENT_VERSION} -> {latest_version}\033[0m")
+    print(f"\033[93mTo update, run: pip install --upgrade git+https://github.com/{GITHUB_REPO}.git\033[0m\n")
 
 def load_settings():
     """Load settings from file with error recovery"""
