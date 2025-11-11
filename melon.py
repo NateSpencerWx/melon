@@ -1075,10 +1075,10 @@ def main():
             try:
                 user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
             except KeyboardInterrupt:
-                print("\n\033[91m👋 Goodbye!\033[0m")
+                print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             except EOFError:
-                print("\n\033[91m👋 Goodbye!\033[0m")
+                print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             
             # Check if a keyboard shortcut was triggered
