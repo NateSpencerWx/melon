@@ -3,6 +3,8 @@
 import json
 import os
 import subprocess
+import urllib.request
+import urllib.error
 from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
@@ -37,6 +39,57 @@ FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
 CHATS_DIR = ".melon_chats"
 DEFAULT_CHAT_NAME = "default"
+CURRENT_VERSION = "0.2.0"
+GITHUB_REPO = "NateSpencerWx/melon"
+
+def parse_version(version_string):
+    """Parse a version string like 'v0.2.0' or '0.2.0' into a tuple of integers."""
+    # Remove 'v' prefix if present
+    version_string = version_string.lstrip('v')
+    try:
+        return tuple(int(part) for part in version_string.split('.'))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+def check_for_updates():
+    """
+    Check GitHub for the latest release and compare with current version.
+    Returns (has_update, latest_version, error_message)
+    """
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url)
+        req.add_header('Accept', 'application/vnd.github.v3+json')
+        req.add_header('User-Agent', 'Melon-CLI')
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            latest_version = data.get('tag_name', '')
+            
+            # Parse versions for comparison
+            current = parse_version(CURRENT_VERSION)
+            latest = parse_version(latest_version)
+            
+            # Check if latest is newer than current
+            if latest > current:
+                return True, latest_version, None
+            return False, latest_version, None
+            
+    except urllib.error.URLError as e:
+        # Network error - silently fail to not interrupt user experience
+        return False, None, str(e)
+    except Exception as e:
+        # Other errors - silently fail
+        return False, None, str(e)
+
+def display_update_notification(latest_version):
+    """Display a notification about available update."""
+    print(f"\033[93m╔═══════════════════════════════════════════════════════════╗\033[0m")
+    print(f"\033[93m║  🎉 A new version of Melon is available: {latest_version:<15}║\033[0m")
+    print(f"\033[93m║                                                           ║\033[0m")
+    print(f"\033[93m║  To update, run:                                          ║\033[0m")
+    print(f"\033[93m║  pip install --upgrade git+https://github.com/{GITHUB_REPO}.git  ║\033[0m")
+    print(f"\033[93m╚═══════════════════════════════════════════════════════════╝\033[0m\n")
 
 def load_settings():
     """Load settings from file with error recovery"""
@@ -966,6 +1019,12 @@ def handle_chat_switch(console, settings, current_chat):
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
+    
+    # Check for updates on startup
+    has_update, latest_version, error = check_for_updates()
+    if has_update and latest_version:
+        display_update_notification(latest_version)
+    
     load_dotenv()
     api_key = os.getenv('OPENROUTER_API_KEY')
 
