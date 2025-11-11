@@ -13,5 +13,6 @@ setup(
         "openai",
         "python-dotenv",
         "rich",
+        "prompt_toolkit",
     ],
 )
