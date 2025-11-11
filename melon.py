@@ -116,8 +116,8 @@ def load_settings():
             if os.path.exists(SETTINGS_FILE):
                 os.rename(SETTINGS_FILE, backup_file)
                 print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
-        except Exception:
-            pass
+        except Exception as backup_error:
+            print(f"\033[91m⚠️  Failed to backup corrupted settings file: {backup_error}\033[0m")
         return default_settings
     except (OSError, PermissionError) as e:
         print(f"\033[93m⚠️  Cannot read settings file: {e}. Using defaults.\033[0m")
@@ -150,8 +150,8 @@ def save_settings(settings):
         try:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-        except Exception:
-            pass
+        except Exception as cleanup_error:
+            print(f"\033[93m⚠️  Failed to remove temp file {temp_file}: {cleanup_error}\033[0m")
         return False
 
 def load_favorites():
@@ -210,7 +210,6 @@ def save_favorites(favorites):
         print(f"\033[91m❌ Unexpected error saving favorites: {e}\033[0m")
         # Clean up temp file if it exists
         try:
-            temp_file = f"{FAVORITES_FILE}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         except Exception:
@@ -322,11 +321,10 @@ def save_history(history, chat_name=None):
     except Exception as e:
         # Clean up temp file if it exists
         try:
-            temp_file = f"{chat_file}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-        except Exception:
-            pass
+        except Exception as cleanup_error:
+            print(f"\033[93m⚠️  Failed to clean up temp file '{temp_file}': {cleanup_error}\033[0m")
         return False
 
 def delete_chat(chat_name):
