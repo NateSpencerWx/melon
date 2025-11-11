@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Table
+from rich.layout import Layout
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import ANSI
 
 LOGO = """
 ╔═══════════════════════════════════════════════════════════╗
@@ -29,10 +35,12 @@ DEFAULT_MODEL = "x-ai/grok-4-fast"
 SAFETY_MODEL = "x-ai/grok-4-fast"  # Hardcoded for safety analysis
 FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
+CHATS_DIR = ".melon_chats"
+DEFAULT_CHAT_NAME = "default"
 
 def load_settings():
     """Load settings from file with error recovery"""
-    default_settings = {"reasoning_enabled": False}
+    default_settings = {"reasoning_enabled": False, "active_chat": DEFAULT_CHAT_NAME}
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE, 'r') as f:
@@ -43,6 +51,8 @@ def load_settings():
                 # Ensure required keys exist
                 if "reasoning_enabled" not in settings:
                     settings["reasoning_enabled"] = False
+                if "active_chat" not in settings:
+                    settings["active_chat"] = DEFAULT_CHAT_NAME
                 return settings
         return default_settings
     except json.JSONDecodeError as e:
@@ -153,6 +163,258 @@ def save_favorites(favorites):
         except Exception:
             pass
         return False
+
+def get_chat_file(chat_name):
+    """Get the file path for a specific chat"""
+    # Ensure chats directory exists
+    if not os.path.exists(CHATS_DIR):
+        os.makedirs(CHATS_DIR, exist_ok=True)
+    return os.path.join(CHATS_DIR, f"{chat_name}.json")
+
+def migrate_old_history():
+    """Migrate old .melon_history.json to new multi-chat format"""
+    old_history_file = ".melon_history.json"
+    if os.path.exists(old_history_file):
+        try:
+            with open(old_history_file, 'r') as f:
+                old_history = json.load(f)
+            
+            # Save to default chat
+            if old_history and isinstance(old_history, list):
+                save_history(old_history, DEFAULT_CHAT_NAME)
+                print(f"\033[92m✓ Migrated old conversation history to '{DEFAULT_CHAT_NAME}' chat\033[0m")
+            
+            # Rename old file as backup
+            backup_file = f"{old_history_file}.backup"
+            os.rename(old_history_file, backup_file)
+            print(f"\033[92m✓ Old history file backed up to {backup_file}\033[0m\n")
+        except Exception as e:
+            print(f"\033[93m⚠️  Could not migrate old history: {e}\033[0m")
+
+def list_chats():
+    """List all available chats"""
+    if not os.path.exists(CHATS_DIR):
+        return []
+    try:
+        chats = []
+        for filename in os.listdir(CHATS_DIR):
+            if filename.endswith('.json'):
+                chat_name = filename[:-5]  # Remove .json extension
+                chats.append(chat_name)
+        return sorted(chats)
+    except Exception:
+        return []
+
+def load_history(chat_name=None):
+    """Load conversation history from a specific chat file with error recovery"""
+    if chat_name is None:
+        chat_name = DEFAULT_CHAT_NAME
+    
+    chat_file = get_chat_file(chat_name)
+    
+    try:
+        if os.path.exists(chat_file):
+            with open(chat_file, 'r') as f:
+                history = json.load(f)
+                # Validate structure
+                if not isinstance(history, list):
+                    raise ValueError("History file contains invalid data structure (expected list)")
+                # Validate each message has required fields
+                for msg in history:
+                    if not isinstance(msg, dict) or 'role' not in msg:
+                        raise ValueError("Invalid message format in history")
+                return history
+        return []
+    except json.JSONDecodeError as e:
+        # File is corrupted - backup and recreate
+        print(f"\033[93m⚠️  Chat '{chat_name}' corrupted ({e}). Creating backup and resetting...\033[0m")
+        try:
+            backup_file = f"{chat_file}.backup"
+            if os.path.exists(chat_file):
+                os.rename(chat_file, backup_file)
+                print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
+        except Exception:
+            pass
+        return []
+    except (OSError, PermissionError) as e:
+        print(f"\033[93m⚠️  Cannot read chat '{chat_name}': {e}. Starting with empty history.\033[0m")
+        return []
+    except Exception as e:
+        print(f"\033[93m⚠️  Unexpected error loading chat '{chat_name}': {e}. Starting with empty history.\033[0m")
+        return []
+
+def save_history(history, chat_name=None):
+    """Save conversation history to a specific chat file with error handling"""
+    if chat_name is None:
+        chat_name = DEFAULT_CHAT_NAME
+    
+    chat_file = get_chat_file(chat_name)
+    
+    try:
+        # Validate input
+        if not isinstance(history, list):
+            raise ValueError("History must be a list")
+        
+        # Write to temporary file first
+        temp_file = f"{chat_file}.tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        # If successful, replace the original file
+        os.replace(temp_file, chat_file)
+        return True
+    except (OSError, PermissionError) as e:
+        # Silently fail for history saving to not interrupt user flow
+        return False
+    except Exception as e:
+        # Clean up temp file if it exists
+        try:
+            temp_file = f"{chat_file}.tmp"
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+        return False
+
+def delete_chat(chat_name):
+    """Delete a specific chat"""
+    if chat_name == DEFAULT_CHAT_NAME:
+        return False, "Cannot delete the default chat"
+    
+    chat_file = get_chat_file(chat_name)
+    try:
+        if os.path.exists(chat_file):
+            os.remove(chat_file)
+            return True, f"Chat '{chat_name}' deleted"
+        return False, f"Chat '{chat_name}' not found"
+    except Exception as e:
+        return False, f"Error deleting chat: {e}"
+
+def rename_chat(old_name, new_name):
+    """Rename a chat"""
+    if old_name == DEFAULT_CHAT_NAME:
+        return False, "Cannot rename the default chat"
+    
+    if new_name == DEFAULT_CHAT_NAME:
+        return False, f"Cannot use '{DEFAULT_CHAT_NAME}' as a name"
+    
+    old_file = get_chat_file(old_name)
+    new_file = get_chat_file(new_name)
+    
+    try:
+        if not os.path.exists(old_file):
+            return False, f"Chat '{old_name}' not found"
+        if os.path.exists(new_file):
+            return False, f"Chat '{new_name}' already exists"
+        os.rename(old_file, new_file)
+        return True, f"Chat renamed from '{old_name}' to '{new_name}'"
+    except Exception as e:
+        return False, f"Error renaming chat: {e}"
+
+def generate_chat_name(messages, client, current_name=None):
+    """
+    Use AI to generate a descriptive name for a chat based on its messages.
+    Returns a short, descriptive name (2-4 words max).
+    For dynamic renaming, uses recent messages to reflect current conversation topic.
+    """
+    try:
+        # Get user messages to understand the topic
+        user_messages = [msg for msg in messages if msg.get("role") == "user"]
+        if not user_messages:
+            # Fallback to timestamp-based name
+            import time
+            return f"chat-{int(time.time())}"
+        
+        # For dynamic renaming, focus on recent messages to capture topic evolution
+        # Use last 3-5 user messages for better context of current conversation
+        recent_count = min(5, len(user_messages))
+        recent_messages = user_messages[-recent_count:]
+        
+        # Build context from recent messages
+        context = " ".join([msg.get("content", "")[:150] for msg in recent_messages])
+        
+        response = client.chat.completions.create(
+            model=SAFETY_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a chat naming assistant. Generate a short, descriptive name (2-4 words max) for a conversation based on its content. "
+                        "The name should be lowercase with hyphens, like 'python-help', 'work-project', or 'vacation-planning'. "
+                        "Focus on the main topic of the conversation. "
+                        "Only respond with the name, nothing else."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Generate a short name for a conversation about: {context}"
+                }
+            ],
+            max_tokens=20
+        )
+        
+        # Clean up the response
+        name = response.choices[0].message.content.strip().lower()
+        # Remove any quotes, extra spaces, and ensure it's a valid filename
+        name = name.replace('"', '').replace("'", '').replace(' ', '-')
+        # Remove any invalid characters
+        import re
+        name = re.sub(r'[^a-z0-9\-]', '', name)
+        # Limit length
+        name = name[:50]
+        
+        # Don't check uniqueness if we're renaming the current chat
+        # (the current name will be freed up)
+        if current_name != name:
+            chats = list_chats()
+            # Remove current_name from the list if it exists (we're renaming it)
+            if current_name and current_name in chats:
+                chats = [c for c in chats if c != current_name]
+            
+            if name in chats:
+                import time
+                name = f"{name}-{int(time.time()) % 10000}"
+        
+        return name if name else f"chat-{int(time.time())}"
+    except Exception as e:
+        # Fallback to timestamp-based name
+        import time
+        return f"chat-{int(time.time())}"
+
+def dynamic_rename_chat(messages, client, current_chat, settings):
+    """
+    Dynamically rename a chat based on the current conversation.
+    Returns (success, new_name, message)
+    """
+    # Don't rename the default chat
+    if current_chat == DEFAULT_CHAT_NAME:
+        return False, current_chat, "Default chat cannot be renamed"
+    
+    try:
+        # Generate a new name based on current conversation
+        new_name = generate_chat_name(messages, client, current_name=current_chat)
+        
+        # If the name hasn't changed significantly, don't rename
+        if new_name == current_chat:
+            return False, current_chat, "Chat name unchanged"
+        
+        # Rename the chat file
+        old_file = get_chat_file(current_chat)
+        new_file = get_chat_file(new_name)
+        
+        if os.path.exists(old_file):
+            os.rename(old_file, new_file)
+            
+            # Update settings to reflect new name
+            settings["active_chat"] = new_name
+            save_settings(settings)
+            
+            return True, new_name, f"Chat renamed from '{current_chat}' to '{new_name}'"
+        else:
+            return False, current_chat, f"Chat file not found"
+    
+    except Exception as e:
+        return False, current_chat, f"Error during dynamic rename: {e}"
 
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
@@ -440,16 +702,188 @@ def toggle_reasoning(settings: dict, console, target_state: str | None = None) -
     return settings
 
 
+def handle_chat_management(console, settings):
+    """Handle the chat management interface"""
+    current_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
+    chats = list_chats()
+    
+    console.print("\n[cyan]💬 Chat Management[/cyan]")
+    console.print(f"[yellow]Current chat:[/yellow] {current_chat}")
+    
+    if chats:
+        console.print("\n[cyan]Available chats:[/cyan]")
+        for i, chat in enumerate(chats, 1):
+            marker = " ← current" if chat == current_chat else ""
+            console.print(f"  [{i}] {chat}{marker}")
+    else:
+        console.print("\n[yellow]No saved chats yet[/yellow]")
+    
+    console.print("\n[cyan]Options:[/cyan]")
+    console.print("  [1] Switch to a different chat")
+    console.print("  [2] Create a new chat")
+    console.print("  [3] Rename a chat")
+    console.print("  [4] Delete a chat")
+    console.print("  [5] Cancel")
+    
+    choice = input("\n\033[95mSelect an option (1-5): \033[0m").strip()
+    
+    if choice == "1":
+        # Switch chat
+        if not chats:
+            console.print("[yellow]No chats available to switch to[/yellow]")
+            return settings
+        
+        console.print("\n[cyan]Select a chat:[/cyan]")
+        for i, chat in enumerate(chats, 1):
+            console.print(f"  [{i}] {chat}")
+        
+        try:
+            chat_choice = int(input("\n\033[95mEnter chat number: \033[0m").strip())
+            if 1 <= chat_choice <= len(chats):
+                selected_chat = chats[chat_choice - 1]
+                settings["active_chat"] = selected_chat
+                if save_settings(settings):
+                    console.print(f"[green]✓ Switched to chat: {selected_chat}[/green]")
+                    console.print("[yellow]⚠️  Please restart Melon to load the new chat[/yellow]")
+                else:
+                    console.print("[red]Failed to save settings[/red]")
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "2":
+        # Create new chat
+        chat_name = input("\033[95mEnter new chat name: \033[0m").strip()
+        if not chat_name:
+            console.print("[red]Chat name cannot be empty[/red]")
+        elif chat_name in chats:
+            console.print(f"[red]Chat '{chat_name}' already exists[/red]")
+        else:
+            # Create empty chat and switch to it
+            save_history([], chat_name)
+            settings["active_chat"] = chat_name
+            if save_settings(settings):
+                console.print(f"[green]✓ Created and switched to chat: {chat_name}[/green]")
+                console.print("[yellow]⚠️  Please restart Melon to load the new chat[/yellow]")
+            else:
+                console.print("[red]Failed to save settings[/red]")
+    
+    elif choice == "3":
+        # Rename chat
+        if not chats:
+            console.print("[yellow]No chats to rename[/yellow]")
+            return settings
+        
+        console.print("\n[cyan]Select a chat to rename:[/cyan]")
+        for i, chat in enumerate(chats, 1):
+            console.print(f"  [{i}] {chat}")
+        
+        try:
+            chat_choice = int(input("\n\033[95mEnter chat number: \033[0m").strip())
+            if 1 <= chat_choice <= len(chats):
+                old_name = chats[chat_choice - 1]
+                new_name = input(f"\033[95mEnter new name for '{old_name}': \033[0m").strip()
+                if new_name:
+                    success, message = rename_chat(old_name, new_name)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        # Update active chat if it was renamed
+                        if settings.get("active_chat") == old_name:
+                            settings["active_chat"] = new_name
+                            save_settings(settings)
+                    else:
+                        console.print(f"[red]{message}[/red]")
+                else:
+                    console.print("[red]New name cannot be empty[/red]")
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "4":
+        # Delete chat
+        if not chats or len(chats) == 1:
+            console.print("[yellow]Need at least 2 chats to delete one[/yellow]")
+            return settings
+        
+        console.print("\n[cyan]Select a chat to delete:[/cyan]")
+        for i, chat in enumerate(chats, 1):
+            console.print(f"  [{i}] {chat}")
+        
+        try:
+            chat_choice = int(input("\n\033[95mEnter chat number: \033[0m").strip())
+            if 1 <= chat_choice <= len(chats):
+                chat_name = chats[chat_choice - 1]
+                confirm = input(f"\033[95m⚠️  Delete chat '{chat_name}'? (yes/no): \033[0m").strip().lower()
+                if confirm == "yes":
+                    success, message = delete_chat(chat_name)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        # Switch to default if we deleted the active chat
+                        if settings.get("active_chat") == chat_name:
+                            settings["active_chat"] = DEFAULT_CHAT_NAME
+                            save_settings(settings)
+                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                    else:
+                        console.print(f"[red]{message}[/red]")
+                else:
+                    console.print("[yellow]Deletion cancelled[/yellow]")
+            else:
+                console.print("[red]Invalid selection[/red]")
+        except ValueError:
+            console.print("[red]Invalid input[/red]")
+    
+    elif choice == "5":
+        console.print("[yellow]Cancelled[/yellow]")
+    
+    else:
+        console.print("[red]Invalid option[/red]")
+    
+    return settings
+
+
+def create_input_session():
+    """Create a prompt session with Ctrl key bindings"""
+    kb = KeyBindings()
+    
+    # Store action that was triggered
+    class KeyAction:
+        action = None
+    
+    @kb.add('c-n')  # Ctrl+N for new chat
+    def _(event):
+        KeyAction.action = 'new_chat'
+        event.app.exit(result='__CTRL_N__')
+    
+    @kb.add('c-o')  # Ctrl+O for model selection (changed from Ctrl+M which conflicts with Enter)
+    def _(event):
+        KeyAction.action = 'model'
+        event.app.exit(result='__CTRL_O__')
+    
+    @kb.add('c-r')  # Ctrl+R for reasoning toggle
+    def _(event):
+        KeyAction.action = 'reasoning'
+        event.app.exit(result='__CTRL_R__')
+    
+    @kb.add('c-s')  # Ctrl+S for switching chats
+    def _(event):
+        KeyAction.action = 'switch_chat'
+        event.app.exit(result='__CTRL_S__')
+    
+    session = PromptSession(key_bindings=kb)
+    return session, KeyAction
+
+
 def display_status(console, current_model, settings):
     """Show the current model and reasoning status with quick command hints"""
     reasoning_on = settings.get("reasoning_enabled", False)
     reasoning_label = "[green]ON[/green]" if reasoning_on else "[red]OFF[/red]"
+    active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
     console.print(
+        f"[bold cyan]Chat[/bold cyan]: {active_chat}    "
         f"[bold cyan]Model[/bold cyan]: {current_model}    "
         f"[bold cyan]Reasoning[/bold cyan]: {reasoning_label}"
-    )
-    console.print(
-        "[dim]Shortcuts: /m (model favorite #) switch model · /r (on|off) toggle reasoning · /clear reset history[/dim]"
     )
     console.print("")
 
@@ -460,7 +894,6 @@ def handle_settings(console):
     
     console.print("\n[cyan]⚙️  Settings[/cyan]")
     console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
-    console.print("[dim]Tip: You can also use '/r on' or '/r off' at the main prompt for instant changes.[/dim]")
     console.print("\n[cyan]Options:[/cyan]")
     console.print("  [1] Toggle reasoning (enable extended thinking for complex queries)")
     console.print("  [2] Cancel")
@@ -479,6 +912,55 @@ def handle_settings(console):
     
     console.print(f"[yellow]Reasoning:[/yellow] {'Enabled' if settings.get('reasoning_enabled', False) else 'Disabled'}")
     return settings
+
+
+def handle_chat_switch(console, settings, current_chat):
+    """Handle switching between chats"""
+    chats = list_chats()
+    
+    if not chats:
+        console.print("[yellow]No chats available[/yellow]")
+        return current_chat
+    
+    console.print("\n[cyan]💬 Available Chats:[/cyan]")
+    for i, chat in enumerate(chats, 1):
+        # Load history to get message count
+        history = load_history(chat)
+        msg_count = len(history)
+        current_marker = " ← current" if chat == current_chat else ""
+        console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
+    
+    console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+    choice = input("\033[95m> \033[0m").strip()
+    
+    if not choice:
+        console.print("[yellow]Cancelled[/yellow]")
+        return current_chat
+    
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(chats):
+            selected_chat = chats[idx]
+            if selected_chat != current_chat:
+                # Update settings
+                settings["active_chat"] = selected_chat
+                save_settings(settings)
+                
+                # Load history count for display
+                history = load_history(selected_chat)
+                msg_count = len(history)
+                console.print(f"[green]✓ Switched to '{selected_chat}' ({msg_count} messages)[/green]")
+                return selected_chat
+            else:
+                console.print("[yellow]Already in this chat[/yellow]")
+                return current_chat
+        else:
+            console.print("[red]Invalid selection[/red]")
+            return current_chat
+    except ValueError:
+        console.print("[red]Invalid input[/red]")
+        return current_chat
+
 
 
 def main():
@@ -544,6 +1026,10 @@ def main():
     # Initialize current model and settings
     current_model = DEFAULT_MODEL
     settings = load_settings()
+    active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
+
+    # Migrate old single-file history if it exists
+    migrate_old_history()
 
     # Initialize conversation history with system message
     system_message = {
@@ -559,51 +1045,105 @@ def main():
             "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information."
         )
     }
-    messages = [system_message]
+    
+    # Load persisted conversation history from active chat
+    loaded_history = load_history(active_chat)
+    if loaded_history:
+        # Verify the first message is a system message, if not prepend it
+        if loaded_history[0].get("role") != "system":
+            messages = [system_message] + loaded_history
+        else:
+            # Replace the old system message with the current one
+            messages = [system_message] + loaded_history[1:]
+        # Calculate actual conversation messages (excluding system message)
+        conversation_count = len([m for m in messages if m.get("role") != "system"])
+        print(f"\033[92m✓ Loaded {conversation_count} conversation messages from '{active_chat}' chat\033[0m\n")
+    else:
+        messages = [system_message]
 
-    print("\033[96m💡 Type your request in natural language. Use '/m' to switch models, '/r' to toggle reasoning, '/clear' to reset, and ^C to leave.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
+    
+    # Create prompt session with key bindings
+    session, key_action = create_input_session()
+    
     while True:
         try:
             display_status(console, current_model, settings)
-            user_input = input("\033[95m🍉 \033[0m").strip()
-            if not user_input:
-                continue
-
-            # Check for quick commands
-            lowered_input = user_input.lower()
-
-            if lowered_input in {"model", "/model"}:
-                current_model = process_model_command("/m", current_model, console)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            if lowered_input.startswith("/m"):
-                current_model = process_model_command(user_input, current_model, console)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Check for settings command
-            if lowered_input in {"settings", "/settings"}:
-                settings = handle_settings(console)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Quick reasoning toggle command
-            if lowered_input in {"/r", "/reason", "/reasoning"} or lowered_input.startswith("/r "):
-                target_state = None
-                parts = user_input.split(maxsplit=1)
-                if len(parts) > 1:
-                    target_state = parts[1].strip().lower()
-                settings = toggle_reasoning(settings, console, target_state)
-                print("\033[90m" + "─" * 60 + "\033[0m\n")
-                continue
-
-            # Check for clear command
-            if lowered_input in ["clear"]:
-                print("\033[92m🧹 Conversation history cleared. Starting fresh!\033[0m")
+            
+            # Use prompt_toolkit session for input with key bindings
+            try:
+                user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
+            except KeyboardInterrupt:
+                print("\n\033[91m👋 Thanks for using Melon!\033[0m")
+                break
+            except EOFError:
+                print("\n\033[91m👋 Thanks for using Melon!\033[0m")
+                break
+            
+            # Check if a keyboard shortcut was triggered
+            if user_input == '__CTRL_N__':
+                # Ctrl+N - Create new chat
+                if len(messages) > 1:  # Has some conversation
+                    console.print("\n[cyan]Creating new chat...[/cyan]")
+                    # Generate name based on current conversation
+                    chat_name = generate_chat_name(messages, client)
+                    console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                    
+                    # Save current conversation to the new chat
+                    save_history(messages[1:], chat_name)
+                    console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
+                else:
+                    # No conversation yet, just create timestamp-based chat
+                    import time
+                    chat_name = f"chat-{int(time.time())}"
+                    save_history([], chat_name)
+                    console.print(f"[green]✓ Created new chat: {chat_name}[/green]")
+                
+                # Switch to the new chat
+                settings["active_chat"] = chat_name
+                save_settings(settings)
+                active_chat = chat_name
+                
+                # Reset messages for new conversation
                 messages = [system_message]
+                console.print("[cyan]Starting fresh conversation in new chat[/cyan]")
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+                
+            elif user_input == '__CTRL_O__':
+                # Ctrl+O - Model selection
+                current_model = handle_model_selection(current_model, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+                
+            elif user_input == '__CTRL_R__':
+                # Ctrl+R - Toggle reasoning
+                settings = toggle_reasoning(settings, console)
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+                
+            elif user_input == '__CTRL_S__':
+                # Ctrl+S - Switch chat
+                new_chat = handle_chat_switch(console, settings, active_chat)
+                if new_chat != active_chat:
+                    # Load the new chat's history
+                    active_chat = new_chat
+                    loaded_history = load_history(active_chat)
+                    
+                    # Merge with system message
+                    if loaded_history and loaded_history[0].get("role") != "system":
+                        messages = [system_message] + loaded_history
+                    else:
+                        # Replace old system message with current one
+                        messages = [system_message] + loaded_history[1:] if loaded_history else [system_message]
+                    
+                    console.print(f"[cyan]Loaded {len([m for m in messages if m.get('role') != 'system'])} messages[/cyan]")
+                
+                print("\033[90m" + "─" * 60 + "\033[0m\n")
+                continue
+            
+            if not user_input:
                 continue
 
             print("\n\033[93mThinking...\033[0m")
@@ -689,6 +1229,19 @@ def main():
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                     print(f"\033[90mDebug - Response object: {response}\033[0m")
+                
+                # Save conversation history after each successful interaction
+                # Skip the system message when saving (it's always added on load)
+                save_history(messages[1:], active_chat)
+                
+                # Dynamic chat renaming: rename chat based on evolving conversation
+                # Only rename if there are actual user messages (not just system/tool messages)
+                user_message_count = len([m for m in messages if m.get("role") == "user"])
+                if user_message_count >= 1:  # At least one user message
+                    success, new_name, rename_msg = dynamic_rename_chat(messages[1:], client, active_chat, settings)
+                    if success:
+                        # Update active_chat reference (rename happens silently)
+                        active_chat = new_name
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
