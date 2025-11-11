@@ -204,6 +204,7 @@ def save_favorites(favorites):
         print(f"\033[91m❌ Unexpected error saving favorites: {e}\033[0m")
         # Clean up temp file if it exists
         try:
+            temp_file = f"{FAVORITES_FILE}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         except Exception:
