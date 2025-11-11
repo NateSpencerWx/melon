@@ -316,6 +316,7 @@ def save_history(history, chat_name=None):
     except Exception as e:
         # Clean up temp file if it exists
         try:
+            temp_file = f"{chat_file}.tmp"
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         except Exception as cleanup_error:
