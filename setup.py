@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="melon",
-    version="0.1.0",
+    version="0.2.1",
     py_modules=["melon"],
     entry_points={
         "console_scripts": [
@@ -10,7 +10,9 @@ setup(
         ],
     },
     install_requires=[
-        "xai-sdk",
+        "openai",
         "python-dotenv",
+        "rich",
+        "prompt_toolkit",
     ],
 )
