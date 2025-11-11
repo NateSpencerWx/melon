@@ -206,8 +206,8 @@ def save_favorites(favorites):
         try:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
-        except Exception:
-            pass
+        except Exception as cleanup_error:
+            print(f"\033[93m⚠️  Could not remove temporary file {temp_file}: {cleanup_error}\033[0m")
         return False
 
 def get_chat_file(chat_name):
