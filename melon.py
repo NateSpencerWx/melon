@@ -169,8 +169,8 @@ def load_favorites():
             if os.path.exists(FAVORITES_FILE):
                 os.rename(FAVORITES_FILE, backup_file)
                 print(f"\033[92m✓ Corrupted file backed up to {backup_file}\033[0m")
-        except Exception:
-            pass
+        except Exception as backup_error:
+            print(f"\033[93m⚠️  Failed to backup corrupted favorites file: {backup_error}\033[0m")
         return []
     except (OSError, PermissionError) as e:
         print(f"\033[93m⚠️  Cannot read favorites file: {e}. Starting with empty list.\033[0m")
