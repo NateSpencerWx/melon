@@ -1102,7 +1102,7 @@ def main():
                 user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
             except KeyboardInterrupt:
                 # Save unsaved chat before exiting
-                if is_new_unsaved_chat and len(messages) > 1:
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
                     chat_name = generate_chat_name(messages[1:], client)
                     save_history(messages[1:], chat_name)
@@ -1113,7 +1113,7 @@ def main():
                 break
             except EOFError:
                 # Save unsaved chat before exiting
-                if is_new_unsaved_chat and len(messages) > 1:
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
                     chat_name = generate_chat_name(messages[1:], client)
                     save_history(messages[1:], chat_name)
@@ -1126,7 +1126,7 @@ def main():
             # Check if a keyboard shortcut was triggered
             if user_input == '__CTRL_N__':
                 # Ctrl+N - Create new chat
-                if len(messages) > 1:  # Has some conversation
+                if len([m for m in messages if m.get("role") == "user"]) > 0:  # Has user messages
                     console.print("\n[cyan]Saving current chat...[/cyan]")
                     
                     # If the current chat is unsaved, name it now based on first message
