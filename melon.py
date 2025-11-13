@@ -1166,7 +1166,7 @@ def main():
             elif user_input == '__CTRL_S__':
                 # Ctrl+S - Switch chat
                 # First, handle any unsaved new chat
-                if is_new_unsaved_chat and len(messages) > 1:
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     # Save the current unsaved chat before switching
                     console.print("\n[cyan]Saving current chat before switching...[/cyan]")
                     chat_name = generate_chat_name(messages[1:], client)
