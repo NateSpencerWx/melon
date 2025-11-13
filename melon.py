@@ -358,10 +358,47 @@ def rename_chat(old_name, new_name):
     except Exception as e:
         return False, f"Error renaming chat: {e}"
 
+def save_unsaved_chat(console, is_new_unsaved_chat, messages, client, settings):
+    """
+    Save an unsaved chat with user messages.
+    
+    Args:
+        console: Rich console for output
+        is_new_unsaved_chat: Whether this is a new unsaved chat
+        messages: List of chat messages
+        client: OpenAI client for chat naming
+        settings: Settings dictionary
+    
+    Returns:
+        tuple: (success: bool, chat_name: str or None, error: str or None)
+    """
+    if not is_new_unsaved_chat or len([m for m in messages if m.get("role") == "user"]) == 0:
+        return False, None, "No unsaved chat with user messages"
+    
+    try:
+        chat_name = generate_chat_name(messages[1:], client)
+        save_history(messages[1:], chat_name)
+        settings["active_chat"] = chat_name
+        save_settings(settings)
+        return True, chat_name, None
+    except Exception as e:
+        # Fallback to timestamp-based name
+        try:
+            import time
+            chat_name = f"chat-{int(time.time())}"
+            save_history(messages[1:], chat_name)
+            settings["active_chat"] = chat_name
+            save_settings(settings)
+            return True, chat_name, str(e)
+        except Exception as fallback_error:
+            return False, None, str(fallback_error)
+
+
 def generate_chat_name(messages, client, current_name=None):
     """
     Use AI to generate a descriptive name for a chat based on the first user message.
     Returns a short, descriptive name (2-4 words max).
+    This is only called once when a new chat is created, not for dynamic renaming.
     """
     try:
         # Get user messages to understand the topic
@@ -884,7 +921,14 @@ def create_input_session():
 
 
 def display_status(console, current_model, settings, active_chat=None):
-    """Show the current model and reasoning status with quick command hints"""
+    """Show the current model and reasoning status with quick command hints
+    
+    Args:
+        console: Rich console for output
+        current_model: The currently selected model
+        settings: Settings dictionary
+        active_chat: The name of the active chat, or None for unsaved new chats
+    """
     reasoning_on = settings.get("reasoning_enabled", False)
     reasoning_label = "[green]ON[/green]" if reasoning_on else "[red]OFF[/red]"
     
@@ -1104,22 +1148,26 @@ def main():
                 # Save unsaved chat before exiting
                 if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
-                    chat_name = generate_chat_name(messages[1:], client)
-                    save_history(messages[1:], chat_name)
-                    settings["active_chat"] = chat_name
-                    save_settings(settings)
-                    console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    success, chat_name, error = save_unsaved_chat(console, is_new_unsaved_chat, messages, client, settings)
+                    if success:
+                        if error:
+                            console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                        console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             except EOFError:
                 # Save unsaved chat before exiting
                 if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
-                    chat_name = generate_chat_name(messages[1:], client)
-                    save_history(messages[1:], chat_name)
-                    settings["active_chat"] = chat_name
-                    save_settings(settings)
-                    console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    success, chat_name, error = save_unsaved_chat(console, is_new_unsaved_chat, messages, client, settings)
+                    if success:
+                        if error:
+                            console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                        console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             
@@ -1131,13 +1179,16 @@ def main():
                     
                     # If the current chat is unsaved, name it now based on first message
                     if is_new_unsaved_chat:
-                        chat_name = generate_chat_name(messages[1:], client)
-                        console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
-                        save_history(messages[1:], chat_name)
-                        console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
-                        # Update settings to point to the saved chat
-                        settings["active_chat"] = chat_name
-                        save_settings(settings)
+                        try:
+                            chat_name = generate_chat_name(messages[1:], client)
+                            console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                            save_history(messages[1:], chat_name)
+                            console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
+                            # Update settings to point to the saved chat
+                            settings["active_chat"] = chat_name
+                            save_settings(settings)
+                        except Exception as e:
+                            console.print(f"[red]✗ Failed to save chat: {e}[/red]")
                     else:
                         # Current chat already has a name, just save it
                         save_history(messages[1:], active_chat)
@@ -1169,13 +1220,18 @@ def main():
                 if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     # Save the current unsaved chat before switching
                     console.print("\n[cyan]Saving current chat before switching...[/cyan]")
-                    chat_name = generate_chat_name(messages[1:], client)
-                    console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
-                    save_history(messages[1:], chat_name)
-                    settings["active_chat"] = chat_name
-                    save_settings(settings)
-                    active_chat = chat_name
-                    is_new_unsaved_chat = False
+                    try:
+                        chat_name = generate_chat_name(messages[1:], client)
+                        console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                        save_history(messages[1:], chat_name)
+                        settings["active_chat"] = chat_name
+                        save_settings(settings)
+                        active_chat = chat_name
+                        is_new_unsaved_chat = False
+                    except Exception as e:
+                        console.print(f"[red]✗ Failed to save chat: {e}[/red]")
+                        print("\033[90m" + "─" * 60 + "\033[0m\n")
+                        continue
                 
                 # Now switch to a different chat
                 current_chat_for_display = active_chat if active_chat else DEFAULT_CHAT_NAME
