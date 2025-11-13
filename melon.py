@@ -1101,9 +1101,25 @@ def main():
             try:
                 user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
             except KeyboardInterrupt:
+                # Save unsaved chat before exiting
+                if is_new_unsaved_chat and len(messages) > 1:
+                    console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
+                    chat_name = generate_chat_name(messages[1:], client)
+                    save_history(messages[1:], chat_name)
+                    settings["active_chat"] = chat_name
+                    save_settings(settings)
+                    console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             except EOFError:
+                # Save unsaved chat before exiting
+                if is_new_unsaved_chat and len(messages) > 1:
+                    console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
+                    chat_name = generate_chat_name(messages[1:], client)
+                    save_history(messages[1:], chat_name)
+                    settings["active_chat"] = chat_name
+                    save_settings(settings)
+                    console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             
@@ -1274,8 +1290,8 @@ def main():
                 
                 # Check if this is the first message in a new unsaved chat
                 user_message_count = len([m for m in messages if m.get("role") == "user"])
-                if is_new_unsaved_chat and user_message_count == 1:
-                    # This is the first message - generate chat name and save
+                if is_new_unsaved_chat and user_message_count >= 1:
+                    # This is the first successful response - generate chat name and save
                     chat_name = generate_chat_name(messages[1:], client)
                     console.print(f"\n[yellow]💾 Chat named:[/yellow] {chat_name}")
                     save_history(messages[1:], chat_name)
