@@ -1292,15 +1292,26 @@ def main():
                 user_message_count = len([m for m in messages if m.get("role") == "user"])
                 if is_new_unsaved_chat and user_message_count >= 1:
                     # This is the first successful response - generate chat name and save
-                    chat_name = generate_chat_name(messages[1:], client)
-                    console.print(f"\n[yellow]💾 Chat named:[/yellow] {chat_name}")
-                    save_history(messages[1:], chat_name)
-                    
-                    # Update settings to point to the new chat
-                    settings["active_chat"] = chat_name
-                    save_settings(settings)
-                    active_chat = chat_name
-                    is_new_unsaved_chat = False
+                    try:
+                        chat_name = generate_chat_name(messages[1:], client)
+                        console.print(f"\n[yellow]💾 Chat named:[/yellow] {chat_name}")
+                        save_history(messages[1:], chat_name)
+                        
+                        # Update settings to point to the new chat
+                        settings["active_chat"] = chat_name
+                        save_settings(settings)
+                        active_chat = chat_name
+                        is_new_unsaved_chat = False
+                    except Exception as e:
+                        console.print(f"[yellow]⚠️  Could not auto-name chat: {e}. Using timestamp.[/yellow]")
+                        # Fallback to timestamp-based name
+                        import time
+                        chat_name = f"chat-{int(time.time())}"
+                        save_history(messages[1:], chat_name)
+                        settings["active_chat"] = chat_name
+                        save_settings(settings)
+                        active_chat = chat_name
+                        is_new_unsaved_chat = False
                 elif active_chat:
                     # Regular save to existing chat
                     save_history(messages[1:], active_chat)
