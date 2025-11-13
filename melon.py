@@ -1020,7 +1020,7 @@ def main():
         display_update_notification(latest_)
     elif not has_update and latest_ and not error:
         # Successfully checked and no update available
-        print("\033[92m✓ Melon is up to date ( {0})\033[0m\n".format(CURRENT_VERSION))
+        print("\033[92m✓ Melon is up to date ({0})\033[0m\n".format(CURRENT_VERSION))
     
     load_dotenv()
     api_key = os.getenv('OPENROUTER_API_KEY')
