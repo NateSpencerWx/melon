@@ -977,7 +977,16 @@ def handle_settings(console):
 
 
 def handle_chat_switch(console, settings, current_chat):
-    """Handle switching between chats"""
+    """Handle switching between chats
+    
+    Args:
+        console: Rich console for output
+        settings: Settings dictionary
+        current_chat: The currently active chat name, or None if in a new unsaved chat
+    
+    Returns:
+        The selected chat name, or current_chat if cancelled/invalid
+    """
     chats = list_chats()
     
     if not chats:
@@ -989,7 +998,8 @@ def handle_chat_switch(console, settings, current_chat):
         # Load history to get message count
         history = load_history(chat)
         msg_count = len(history)
-        current_marker = " ← current" if chat == current_chat else ""
+        # Only show current marker if current_chat is not None and matches
+        current_marker = " ← current" if current_chat is not None and chat == current_chat else ""
         console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
     
     console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
@@ -1003,7 +1013,8 @@ def handle_chat_switch(console, settings, current_chat):
         idx = int(choice) - 1
         if 0 <= idx < len(chats):
             selected_chat = chats[idx]
-            if selected_chat != current_chat:
+            # When current_chat is None (new unsaved chat), always allow switching
+            if current_chat is None or selected_chat != current_chat:
                 # Update settings
                 settings["active_chat"] = selected_chat
                 save_settings(settings)
@@ -1225,8 +1236,8 @@ def main():
                         continue
                 
                 # Now switch to a different chat
-                current_chat_for_display = active_chat if active_chat else DEFAULT_CHAT_NAME
-                new_chat = handle_chat_switch(console, settings, current_chat_for_display)
+                # Pass active_chat directly (can be None for new unsaved chat)
+                new_chat = handle_chat_switch(console, settings, active_chat)
                 # Note: None != string is intentional for handling unsaved chats
                 if new_chat != active_chat:
                     # Load the new chat's history
