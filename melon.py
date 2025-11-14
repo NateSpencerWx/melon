@@ -1094,8 +1094,7 @@ def main():
     # Initialize current model and settings
     current_model = DEFAULT_MODEL
     settings = load_settings()
-    active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
-
+    
     # Migrate old single-file history if it exists
     migrate_old_history()
 
@@ -1114,29 +1113,16 @@ def main():
         )
     }
     
-    # Load persisted conversation history from active chat
-    loaded_history = load_history(active_chat)
-    if loaded_history:
-        # Verify the first message is a system message, if not prepend it
-        if loaded_history[0].get("role") != "system":
-            messages = [system_message] + loaded_history
-        else:
-            # Replace the old system message with the current one
-            messages = [system_message] + loaded_history[1:]
-        # Calculate actual conversation messages (excluding system message)
-        conversation_count = len([m for m in messages if m.get("role") != "system"])
-        print(f"\033[92m✓ Loaded {conversation_count} conversation messages from '{active_chat}' chat\033[0m\n")
-    else:
-        messages = [system_message]
+    # Start in a new, unsaved chat on every launch
+    messages = [system_message]
+    active_chat = None
+    is_new_unsaved_chat = True
 
     print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
     session, key_action = create_input_session()
-    
-    # Track if we're in a new unsaved chat (will be named on first message)
-    is_new_unsaved_chat = False
     
     while True:
         try:
