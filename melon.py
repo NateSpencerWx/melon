@@ -371,6 +371,8 @@ def save_unsaved_chat(is_new_unsaved_chat, messages, client, settings):
     Returns:
         tuple: (success: bool, chat_name: str or None, error: str or None)
     """
+    import time
+    
     if not is_new_unsaved_chat or len([m for m in messages if m.get("role") == "user"]) == 0:
         return False, None, "No unsaved chat with user messages"
     
@@ -384,14 +386,15 @@ def save_unsaved_chat(is_new_unsaved_chat, messages, client, settings):
     except Exception as e:
         # Fallback to timestamp-based name
         try:
-            import time
             chat_name = f"chat-{int(time.time())}"
-            save_history(messages[1:], chat_name)
+            if not save_history(messages[1:], chat_name):
+                raise RuntimeError("Failed to save chat history with timestamp")
             settings["active_chat"] = chat_name
             save_settings(settings)
             return True, chat_name, str(e)
         except Exception as fallback_error:
             return False, None, str(fallback_error)
+
 
 
 
@@ -1174,6 +1177,9 @@ def main():
                             console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
                         else:
                             console.print(f"[red]✗ Failed to save chat: {error}[/red]")
+                            console.print("[red]Cannot create new chat until current chat is saved. Please try again.[/red]")
+                            print("\033[90m" + "─" * 60 + "\033[0m\n")
+                            continue
                     else:
                         # Current chat already has a name, just save it
                         save_history(messages[1:], active_chat)
@@ -1214,12 +1220,14 @@ def main():
                         is_new_unsaved_chat = False
                     else:
                         console.print(f"[red]✗ Failed to save chat: {error}[/red]")
+                        console.print("[red]Chat switch cancelled. Please resolve the save issue before switching chats.[/red]")
                         print("\033[90m" + "─" * 60 + "\033[0m\n")
                         continue
                 
                 # Now switch to a different chat
                 current_chat_for_display = active_chat if active_chat else DEFAULT_CHAT_NAME
                 new_chat = handle_chat_switch(console, settings, current_chat_for_display)
+                # Note: None != string is intentional for handling unsaved chats
                 if new_chat != active_chat:
                     # Load the new chat's history
                     active_chat = new_chat
@@ -1341,8 +1349,10 @@ def main():
                         is_new_unsaved_chat = False
                     else:
                         console.print(f"[red]✗ Failed to save chat: {error}[/red]")
-                        # Continue without saving - will retry on next message or exit
-                elif active_chat:
+                        # Clear flag to prevent infinite retry, but keep messages
+                        # User can manually save with Ctrl+N or exit will attempt save
+                        is_new_unsaved_chat = False
+                elif active_chat is not None:
                     # Regular save to existing chat
                     save_history(messages[1:], active_chat)
             except Exception as e:
