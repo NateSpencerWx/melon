@@ -1002,13 +1002,54 @@ def handle_chat_switch(console, settings, current_chat):
         current_marker = " ← current" if current_chat is not None and chat == current_chat else ""
         console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
     
-    console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+    console.print("\n[dim]Enter number to switch, 'd' + number to delete (e.g., 'd2'), or press Enter to cancel[/dim]")
     choice = input("\033[95m> \033[0m").strip()
     
     if not choice:
         console.print("[yellow]Cancelled[/yellow]")
         return current_chat
     
+    # Check if user wants to delete a chat
+    if choice.lower().startswith('d'):
+        delete_choice = choice[1:].strip()
+        try:
+            idx = int(delete_choice) - 1
+            if 0 <= idx < len(chats):
+                chat_to_delete = chats[idx]
+                
+                # Cannot delete default chat
+                if chat_to_delete == DEFAULT_CHAT_NAME:
+                    console.print(f"[red]Cannot delete the '{DEFAULT_CHAT_NAME}' chat[/red]")
+                    return current_chat
+                
+                # Confirm deletion
+                confirm = input(f"\033[95m⚠️  Delete chat '{chat_to_delete}'? This cannot be undone. (yes/no): \033[0m").strip().lower()
+                if confirm == "yes":
+                    success, message = delete_chat(chat_to_delete)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        # If we deleted the current chat, switch to default
+                        if current_chat == chat_to_delete:
+                            settings["active_chat"] = DEFAULT_CHAT_NAME
+                            save_settings(settings)
+                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                            # Load the default chat and return it
+                            return DEFAULT_CHAT_NAME
+                        return current_chat
+                    else:
+                        console.print(f"[red]{message}[/red]")
+                        return current_chat
+                else:
+                    console.print("[yellow]Deletion cancelled[/yellow]")
+                    return current_chat
+            else:
+                console.print("[red]Invalid selection[/red]")
+                return current_chat
+        except ValueError:
+            console.print("[red]Invalid input for delete operation[/red]")
+            return current_chat
+    
+    # Otherwise, try to switch to a chat
     try:
         idx = int(choice) - 1
         if 0 <= idx < len(chats):
@@ -1132,7 +1173,7 @@ def main():
     active_chat = None
     is_new_unsaved_chat = True
 
-    print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^S to switch/delete chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
