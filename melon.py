@@ -915,7 +915,7 @@ def create_input_session():
         KeyAction.action = 'reasoning'
         event.app.exit(result='__CTRL_R__')
     
-    @kb.add('c-s')  # Ctrl+S for switching chats
+    @kb.add('c-s')  # Ctrl+S for switching/deleting chats
     def _(event):
         KeyAction.action = 'switch_chat'
         event.app.exit(result='__CTRL_S__')
@@ -1258,7 +1258,7 @@ def main():
                 continue
                 
             elif user_input == '__CTRL_S__':
-                # Ctrl+S - Switch chat
+                # Ctrl+S - Switch/delete chat
                 # First, handle any unsaved new chat
                 if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     # Save the current unsaved chat before switching
