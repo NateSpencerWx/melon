@@ -1041,7 +1041,7 @@ def display_chat_history(messages, console):
         if role == "user":
             console.print(f"[bold magenta]🍉 You:[/bold magenta]")
             console.print(f"[magenta]{content}[/magenta]\n")
-        elif role == "assistant":
+        elif role == "assistant" and content:
             console.print(f"[bold cyan]🤖 Melon:[/bold cyan]")
             console.print(Markdown(content))
             console.print("")
