@@ -572,7 +572,7 @@ def run_terminal_command(command: str, client=None, console=None):
     
     # Execute the command
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         output = result.stdout + result.stderr
         return {"output": output, "returncode": result.returncode}
     except subprocess.TimeoutExpired:
