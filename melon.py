@@ -1035,7 +1035,33 @@ def handle_chat_switch(console, settings, current_chat):
         return current_chat
 
 
-
+def display_chat_history(messages, console):
+    """Display previous messages from chat history to the user"""
+    # Filter out system messages, tool messages, and assistant messages with tool_calls
+    user_messages = [
+        m for m in messages
+        if m.get("role") == "user"
+        or (m.get("role") == "assistant" and "tool_calls" not in m)
+    ]
+    
+    if not user_messages:
+        return
+    
+    console.print("\n[cyan]═══ Previous Messages ═══[/cyan]\n")
+    
+    for msg in user_messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        
+        if role == "user" and content:
+            console.print(f"[bold magenta]🍉 You:[/bold magenta]")
+            console.print(f"[magenta]{content}[/magenta]\n")
+        elif role == "assistant" and content:
+            console.print(f"[bold cyan]🤖 Melon:[/bold cyan]")
+            console.print(Markdown(content))
+            console.print("")
+    
+    console.print("[cyan]═══ End of History ═══[/cyan]\n")
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -1253,6 +1279,9 @@ def main():
                         messages = [system_message] + loaded_history[1:] if loaded_history else [system_message]
                     
                     console.print(f"[cyan]Loaded {len([m for m in messages if m.get('role') != 'system'])} messages[/cyan]")
+                    
+                    # Display the chat history to the user
+                    display_chat_history(loaded_history, console)
                 
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
