@@ -1026,8 +1026,12 @@ def handle_chat_switch(console, settings, current_chat):
 
 def display_chat_history(messages, console):
     """Display previous messages from chat history to the user"""
-    # Filter out system messages
-    user_messages = [m for m in messages if m.get("role") in ["user", "assistant"]]
+    # Filter out system messages, tool messages, and assistant messages with tool_calls
+    user_messages = [
+        m for m in messages
+        if m.get("role") == "user"
+        or (m.get("role") == "assistant" and "tool_calls" not in m)
+    ]
     
     if not user_messages:
         return
