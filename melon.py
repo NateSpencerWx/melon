@@ -376,7 +376,8 @@ def save_unsaved_chat(is_new_unsaved_chat, messages, client, settings):
     
     try:
         chat_name = generate_chat_name(messages[1:], client)
-        save_history(messages[1:], chat_name)
+        if not save_history(messages[1:], chat_name):
+            raise RuntimeError("Failed to save chat history")
         settings["active_chat"] = chat_name
         save_settings(settings)
         return True, chat_name, None
