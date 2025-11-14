@@ -252,6 +252,26 @@ def list_chats():
     except Exception:
         return []
 
+def get_most_recent_chat(chats):
+    """Get the most recently created/modified chat from a list of chat names"""
+    if not chats:
+        return None
+    try:
+        chat_files = []
+        for chat_name in chats:
+            chat_file = get_chat_file(chat_name)
+            if os.path.exists(chat_file):
+                mtime = os.path.getmtime(chat_file)
+                chat_files.append((chat_name, mtime))
+        
+        if chat_files:
+            # Sort by modification time, newest first
+            chat_files.sort(key=lambda x: x[1], reverse=True)
+            return chat_files[0][0]
+        return chats[0]  # Fallback to first chat if timestamps unavailable
+    except Exception:
+        return chats[0] if chats else None
+
 def load_history(chat_name=None):
     """Load conversation history from a specific chat file with error recovery"""
     if chat_name is None:
@@ -849,8 +869,8 @@ def handle_chat_management(console, settings):
     
     elif choice == "4":
         # Delete chat
-        if not chats or len(chats) == 1:
-            console.print("[yellow]Need at least 2 chats to delete one[/yellow]")
+        if not chats:
+            console.print("[yellow]No chats available to delete[/yellow]")
             return settings
         
         console.print("\n[cyan]Select a chat to delete:[/cyan]")
@@ -866,11 +886,22 @@ def handle_chat_management(console, settings):
                     success, message = delete_chat(chat_name)
                     if success:
                         console.print(f"[green]✓ {message}[/green]")
-                        # Switch to default if we deleted the active chat
+                        # Switch to most recent chat if we deleted the active chat
                         if settings.get("active_chat") == chat_name:
-                            settings["active_chat"] = DEFAULT_CHAT_NAME
-                            save_settings(settings)
-                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
+                                settings["active_chat"] = new_chat
+                                save_settings(settings)
+                                console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                save_settings(settings)
+                                console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
                     else:
                         console.print(f"[red]{message}[/red]")
                 else:
@@ -1014,7 +1045,7 @@ def handle_chat_switch(console, settings, current_chat):
             if 0 <= idx < len(chats):
                 chat_to_delete = chats[idx]
                 
-                # Confirm deletion
+                 # Confirm deletion
                 confirm = input(f"\033[95m⚠️  Delete chat '{chat_to_delete}'? This cannot be undone. (yes/no): \033[0m").strip().lower()
                 if confirm == "yes":
                     success, message = delete_chat(chat_to_delete)
@@ -1025,8 +1056,8 @@ def handle_chat_switch(console, settings, current_chat):
                             # Get remaining chats after deletion
                             remaining_chats = list_chats()
                             if remaining_chats:
-                                # Switch to the first available chat
-                                new_chat = remaining_chats[0]
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
                                 settings["active_chat"] = new_chat
                                 save_settings(settings)
                                 console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
