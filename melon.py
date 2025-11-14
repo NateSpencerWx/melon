@@ -325,9 +325,6 @@ def save_history(history, chat_name=None):
 
 def delete_chat(chat_name):
     """Delete a specific chat"""
-    if chat_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot delete the default chat"
-    
     chat_file = get_chat_file(chat_name)
     try:
         if os.path.exists(chat_file):
@@ -1017,24 +1014,30 @@ def handle_chat_switch(console, settings, current_chat):
             if 0 <= idx < len(chats):
                 chat_to_delete = chats[idx]
                 
-                # Cannot delete default chat
-                if chat_to_delete == DEFAULT_CHAT_NAME:
-                    console.print(f"[red]Cannot delete the '{DEFAULT_CHAT_NAME}' chat[/red]")
-                    return current_chat
-                
                 # Confirm deletion
                 confirm = input(f"\033[95m⚠️  Delete chat '{chat_to_delete}'? This cannot be undone. (yes/no): \033[0m").strip().lower()
                 if confirm == "yes":
                     success, message = delete_chat(chat_to_delete)
                     if success:
                         console.print(f"[green]✓ {message}[/green]")
-                        # If we deleted the current chat, switch to default
+                        # If we deleted the current chat, need to switch to another chat
                         if current_chat == chat_to_delete:
-                            settings["active_chat"] = DEFAULT_CHAT_NAME
-                            save_settings(settings)
-                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
-                            # Load the default chat and return it
-                            return DEFAULT_CHAT_NAME
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the first available chat
+                                new_chat = remaining_chats[0]
+                                settings["active_chat"] = new_chat
+                                save_settings(settings)
+                                console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                return new_chat
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                save_settings(settings)
+                                console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                return DEFAULT_CHAT_NAME
                         return current_chat
                     else:
                         console.print(f"[red]{message}[/red]")
