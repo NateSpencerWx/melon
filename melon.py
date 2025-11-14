@@ -1051,9 +1051,6 @@ def display_chat_history(messages, console):
             console.print("")
     
     console.print("[cyan]═══ End of History ═══[/cyan]\n")
-    print("\033[90m" + "─" * 60 + "\033[0m\n")
-
-
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
