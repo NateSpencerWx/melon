@@ -399,7 +399,7 @@ def generate_chat_name(messages, client, current_name=None):
     """
     Use AI to generate a descriptive name for a chat based on the first user message.
     Returns a short, descriptive name (2-4 words max).
-    This is only called once when a new chat is created, not for dynamic renaming.
+    This is called when a new chat is created to name it based on the first user message. It is not used for dynamic renaming.
     """
     try:
         # Get user messages to understand the topic
