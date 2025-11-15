@@ -1073,8 +1073,10 @@ def handle_chat_switch(console, settings, current_chat):
                                 # No chats left, create a new default chat
                                 save_history([], DEFAULT_CHAT_NAME)
                                 settings["active_chat"] = DEFAULT_CHAT_NAME
-                                save_settings(settings)
-                                console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
                                 return DEFAULT_CHAT_NAME
                         return current_chat
                     else:
