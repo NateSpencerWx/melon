@@ -356,9 +356,6 @@ def delete_chat(chat_name):
 
 def rename_chat(old_name, new_name):
     """Rename a chat"""
-    if old_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot rename the default chat"
-    
     if new_name == DEFAULT_CHAT_NAME:
         return False, f"Cannot use '{DEFAULT_CHAT_NAME}' as a name"
     
