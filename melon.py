@@ -894,8 +894,10 @@ def handle_chat_management(console, settings):
                                 # Switch to the most recently created chat
                                 new_chat = get_most_recent_chat(remaining_chats)
                                 settings["active_chat"] = new_chat
-                                save_settings(settings)
-                                console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
                             else:
                                 # No chats left, create a new default chat
                                 save_history([], DEFAULT_CHAT_NAME)
