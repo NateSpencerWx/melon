@@ -695,7 +695,7 @@ def stream_response_with_tps(stream, console):
                 elapsed = current_time - start_time
                 if elapsed > 0 and token_count > 0:
                     tps = token_count / elapsed
-                    # Clear previous TPS line and display new one
+                    # Display TPS on stderr so it doesn't interfere with content
                     sys.stderr.write(f"\r\033[K\033[90m[TPS: {tps:.1f}]\033[0m")
                     sys.stderr.flush()
                 last_tps_update = current_time
@@ -716,6 +716,8 @@ def stream_response_with_tps(stream, console):
         
         # Print final TPS after streaming completes
         print()  # New line after content
+        # Clear any remaining TPS display
+        sys.stderr.write("\r\033[K")
         elapsed = time.time() - start_time
         if elapsed > 0 and token_count > 0:
             final_tps = token_count / elapsed
