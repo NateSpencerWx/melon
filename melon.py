@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import traceback
 import urllib.request
 import urllib.error
 import time
@@ -620,7 +621,7 @@ def stream_response_with_tps(stream, console):
     
     Args:
         stream: The streaming response from the OpenAI API
-        console: Rich console for output
+        console: Rich console for output (reserved for future use)
     
     Returns:
         tuple: (full_content, tool_calls, finish_reason)
@@ -634,11 +635,8 @@ def stream_response_with_tps(stream, console):
     start_time = time.time()
     last_token_time = start_time
     last_tps_update = start_time
-    zero_tps_start = None
     suggestion_shown = False
-    
-    # For displaying content as it streams
-    print("\033[96m💬 Response:\033[0m ")
+    has_content = False  # Track if we've received any content
     
     try:
         for chunk in stream:
@@ -656,6 +654,11 @@ def stream_response_with_tps(stream, console):
             
             # Handle content streaming
             if delta.content:
+                # Print header only when we first receive content
+                if not has_content:
+                    print("\033[96m💬 Response:\033[0m ")
+                    has_content = True
+                
                 full_content += delta.content
                 # Print the content chunk
                 print(delta.content, end='', flush=True)
@@ -666,9 +669,7 @@ def stream_response_with_tps(stream, console):
                 last_token_time = current_time
                 
                 # Reset zero TPS tracking if we got tokens
-                if zero_tps_start is not None:
-                    zero_tps_start = None
-                    suggestion_shown = False
+                suggestion_shown = False
             
             # Handle tool calls
             if delta.tool_calls:
@@ -690,6 +691,7 @@ def stream_response_with_tps(stream, console):
                         if tool_call_delta.function.arguments:
                             tool_calls[idx]["function"]["arguments"] += tool_call_delta.function.arguments
                 last_token_time = current_time
+            
             # Update TPS display periodically (every 0.5 seconds)
             if current_time - last_tps_update >= 0.5:
                 elapsed = current_time - start_time
@@ -700,22 +702,25 @@ def stream_response_with_tps(stream, console):
                     sys.stderr.flush()
                 last_tps_update = current_time
             
-            # Check for zero TPS condition
+            # Check for zero TPS condition (simplified to 5 seconds total)
             time_since_last_token = current_time - last_token_time
-            if time_since_last_token > 1.0 and token_count > 0:  # Only check if we've received some tokens
-                if zero_tps_start is None:
-                    zero_tps_start = current_time
-                elif not suggestion_shown and (current_time - zero_tps_start) > 5.0:
-                    # Show suggestion after 5 seconds of zero TPS
-                    sys.stderr.write("\n\033[93m💡 Tip: If the response seems stuck, the model might be reasoning or processing. Try:\n")
-                    sys.stderr.write("   • Waiting a bit longer (some models take time to think)\n")
-                    sys.stderr.write("   • Simplifying your request\n")
-                    sys.stderr.write("   • Trying a different model (^O to switch)\033[0m\n")
-                    sys.stderr.flush()
-                    suggestion_shown = True
-        
-        # Print final TPS after streaming completes
-        print()  # New line after content
+            if time_since_last_token > 5.0 and token_count > 0 and not suggestion_shown:
+                # Show suggestion after 5 seconds of zero TPS
+                sys.stderr.write("\n\033[93m💡 Tip: If the response seems stuck, the model might be reasoning or processing. Try:\n")
+                sys.stderr.write("   • Waiting a bit longer (some models take time to think)\n")
+                sys.stderr.write("   • Simplifying your request\n")
+                sys.stderr.write("   • Trying a different model (^O to switch)\033[0m\n")
+                sys.stderr.flush()
+                suggestion_shown = True
+    
+    except Exception as e:
+        print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
+        print(f"\033[90m{traceback.format_exc()}\033[0m")
+    
+    finally:
+        # Cleanup code that should always run
+        if has_content:
+            print()  # New line after content
         # Clear any remaining TPS display
         sys.stderr.write("\r\033[K")
         elapsed = time.time() - start_time
@@ -723,11 +728,6 @@ def stream_response_with_tps(stream, console):
             final_tps = token_count / elapsed
             sys.stderr.write(f"\033[90m[Final TPS: {final_tps:.1f}, Total tokens: ~{token_count}]\033[0m\n")
             sys.stderr.flush()
-    
-    except Exception as e:
-        print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
-        import traceback
-        print(f"\033[90m{traceback.format_exc()}\033[0m")
     
     return full_content, tool_calls, finish_reason
 
