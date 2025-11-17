@@ -689,7 +689,7 @@ def stream_response_with_tps(stream, console):
                             tool_calls[idx]["function"]["name"] = tool_call_delta.function.name
                         if tool_call_delta.function.arguments:
                             tool_calls[idx]["function"]["arguments"] += tool_call_delta.function.arguments
-            
+                last_token_time = current_time
             # Update TPS display periodically (every 0.5 seconds)
             if current_time - last_tps_update >= 0.5:
                 elapsed = current_time - start_time
