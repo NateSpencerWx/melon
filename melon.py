@@ -252,6 +252,26 @@ def list_chats():
     except Exception:
         return []
 
+def get_most_recent_chat(chats):
+    """Get the most recently created/modified chat from a list of chat names"""
+    if not chats:
+        return None
+    try:
+        chat_files = []
+        for chat_name in chats:
+            chat_file = get_chat_file(chat_name)
+            if os.path.exists(chat_file):
+                mtime = os.path.getmtime(chat_file)
+                chat_files.append((chat_name, mtime))
+        
+        if chat_files:
+            # Sort by modification time, newest first
+            chat_files.sort(key=lambda x: x[1], reverse=True)
+            return chat_files[0][0]
+        return chats[0]  # Fallback to first chat if timestamps unavailable
+    except Exception:
+        return chats[0] if chats else None
+
 def load_history(chat_name=None):
     """Load conversation history from a specific chat file with error recovery"""
     if chat_name is None:
@@ -325,9 +345,6 @@ def save_history(history, chat_name=None):
 
 def delete_chat(chat_name):
     """Delete a specific chat"""
-    if chat_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot delete the default chat"
-    
     chat_file = get_chat_file(chat_name)
     try:
         if os.path.exists(chat_file):
@@ -339,9 +356,6 @@ def delete_chat(chat_name):
 
 def rename_chat(old_name, new_name):
     """Rename a chat"""
-    if old_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot rename the default chat"
-    
     if new_name == DEFAULT_CHAT_NAME:
         return False, f"Cannot use '{DEFAULT_CHAT_NAME}' as a name"
     
@@ -852,8 +866,8 @@ def handle_chat_management(console, settings):
     
     elif choice == "4":
         # Delete chat
-        if not chats or len(chats) == 1:
-            console.print("[yellow]Need at least 2 chats to delete one[/yellow]")
+        if not chats:
+            console.print("[yellow]No chats available to delete[/yellow]")
             return settings
         
         console.print("\n[cyan]Select a chat to delete:[/cyan]")
@@ -869,11 +883,26 @@ def handle_chat_management(console, settings):
                     success, message = delete_chat(chat_name)
                     if success:
                         console.print(f"[green]✓ {message}[/green]")
-                        # Switch to default if we deleted the active chat
+                        # Switch to most recent chat if we deleted the active chat
                         if settings.get("active_chat") == chat_name:
-                            settings["active_chat"] = DEFAULT_CHAT_NAME
-                            save_settings(settings)
-                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
+                                settings["active_chat"] = new_chat
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
                     else:
                         console.print(f"[red]{message}[/red]")
                 else:
@@ -915,7 +944,7 @@ def create_input_session():
         KeyAction.action = 'reasoning'
         event.app.exit(result='__CTRL_R__')
     
-    @kb.add('c-s')  # Ctrl+S for switching chats
+    @kb.add('c-s')  # Ctrl+S for switching/deleting chats
     def _(event):
         KeyAction.action = 'switch_chat'
         event.app.exit(result='__CTRL_S__')
@@ -1002,13 +1031,65 @@ def handle_chat_switch(console, settings, current_chat):
         current_marker = " ← current" if current_chat is not None and chat == current_chat else ""
         console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
     
-    console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+    console.print("\n[dim]Enter number to switch, 'd' + number to delete (e.g., 'd2'), or press Enter to cancel[/dim]")
     choice = input("\033[95m> \033[0m").strip()
     
     if not choice:
         console.print("[yellow]Cancelled[/yellow]")
         return current_chat
     
+    # Check if user wants to delete a chat
+    if choice.lower().startswith('d'):
+        delete_choice = choice[1:].strip()
+        try:
+            idx = int(delete_choice) - 1
+            if 0 <= idx < len(chats):
+                chat_to_delete = chats[idx]
+                
+                 # Confirm deletion
+                confirm = input(f"\033[95m⚠️  Delete chat '{chat_to_delete}'? This cannot be undone. (yes/no): \033[0m").strip().lower()
+                if confirm == "yes":
+                    success, message = delete_chat(chat_to_delete)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        # If we deleted the current chat, need to switch to another chat
+                        if current_chat == chat_to_delete:
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
+                                settings["active_chat"] = new_chat
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                    return new_chat
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                                    return new_chat
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                                return DEFAULT_CHAT_NAME
+                        return current_chat
+                    else:
+                        console.print(f"[red]{message}[/red]")
+                        return current_chat
+                else:
+                    console.print("[yellow]Deletion cancelled[/yellow]")
+                    return current_chat
+            else:
+                console.print("[red]Invalid selection[/red]")
+                return current_chat
+        except ValueError:
+            console.print("[red]Invalid input for delete operation[/red]")
+            return current_chat
+    
+    # Otherwise, try to switch to a chat
     try:
         idx = int(choice) - 1
         if 0 <= idx < len(chats):
@@ -1158,7 +1239,7 @@ def main():
     active_chat = None
     is_new_unsaved_chat = True
 
-    print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^S to switch/delete chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
@@ -1243,7 +1324,7 @@ def main():
                 continue
                 
             elif user_input == '__CTRL_S__':
-                # Ctrl+S - Switch chat
+                # Ctrl+S - Switch/delete chat
                 # First, handle any unsaved new chat
                 if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
                     # Save the current unsaved chat before switching
