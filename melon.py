@@ -1378,7 +1378,7 @@ def main():
                 print("\033[96m🤔 Getting a response from Melon...\033[0m")
                 
                 # Handle tool calls in a loop until we get a final response
-                max_iterations = 10  # Prevent infinite loops
+                max_iterations = 1000000000000000000000000000000000000000000000000000000000000000000000000000000  # origionaly meant to limit iterations, but it is not useful anymore
                 iteration = 0
                 
                 while iteration < max_iterations:
