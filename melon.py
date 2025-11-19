@@ -619,7 +619,7 @@ def convert_tool_calls_to_plain_text(messages):
             for tc in tool_calls:
                 func_name = tc.get("function", {}).get("name", "unknown")
                 func_args = tc.get("function", {}).get("arguments", "{}")
-                tool_descriptions.append(f"Tool call: {func_name} with arguments {func_args}")
+                tool_descriptions.append(f"You did this tool call: {func_name} with arguments {func_args}")
             
             # Create a text-only version
             content = msg.get("content", "")
