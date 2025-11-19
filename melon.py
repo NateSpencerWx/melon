@@ -9,7 +9,7 @@ import urllib.error
 import time
 import sys
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 from rich.console import Console
 from rich.markdown import Markdown
 from prompt_toolkit import PromptSession
@@ -596,6 +596,58 @@ def run_terminal_command(command: str, client=None, console=None):
         return {"error": "Command timed out after 60 seconds"}
     except Exception as e:
         return {"error": str(e)}
+
+def convert_tool_calls_to_plain_text(messages):
+    """
+    Convert messages with tool calls to plain text format.
+    This is used as a fallback when models don't support tool call format in history.
+    
+    Args:
+        messages: List of message dictionaries
+        
+    Returns:
+        List of converted messages without tool_calls or tool role messages
+    """
+    converted_messages = []
+    
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            # Convert assistant message with tool calls to plain text
+            tool_calls = msg.get("tool_calls", [])
+            tool_descriptions = []
+            
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "unknown")
+                func_args = tc.get("function", {}).get("arguments", "{}")
+                tool_descriptions.append(f"Tool call: {func_name} with arguments {func_args}")
+            
+            # Create a text-only version
+            content = msg.get("content", "")
+            if tool_descriptions:
+                tool_text = "\n".join(tool_descriptions)
+                if content:
+                    plain_content = f"{content}\n\n{tool_text}"
+                else:
+                    plain_content = tool_text
+            else:
+                plain_content = content or ""
+            
+            converted_messages.append({
+                "role": "assistant",
+                "content": plain_content
+            })
+        elif msg.get("role") == "tool":
+            # Convert tool result to plain text as a user message
+            tool_content = msg.get("content", "")
+            converted_messages.append({
+                "role": "user",
+                "content": f"Tool result: {tool_content}"
+            })
+        else:
+            # Keep other messages as-is
+            converted_messages.append(msg)
+    
+    return converted_messages
 
 tool_definition = {
     "type": "function",
@@ -1513,8 +1565,27 @@ def main():
                     if settings.get('reasoning_enabled', False):
                         api_params["extra_body"] = {"reasoning": {"effort": "high"}}
                     
-                    # Create streaming response
-                    stream = client.chat.completions.create(**api_params)
+                    try:
+                        # Create streaming response
+                        stream = client.chat.completions.create(**api_params)
+                    except BadRequestError as e:
+                        # Some models (like Google Gemini) don't support tool calls in message history
+                        # Convert to plain text and retry without tools
+                        error_message = str(e)
+                        if "invalid argument" in error_message.lower() or "provider returned error" in error_message.lower():
+                            print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
+                            
+                            # Convert tool call history to plain text
+                            converted_messages = convert_tool_calls_to_plain_text(messages)
+                            
+                            # Retry without tools parameter
+                            api_params["messages"] = converted_messages
+                            del api_params["tools"]  # Remove tools from the API call
+                            
+                            stream = client.chat.completions.create(**api_params)
+                        else:
+                            # Re-raise if it's a different error
+                            raise
                     
                     # Stream the response with TPS tracking
                     content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
