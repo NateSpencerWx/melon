@@ -3,8 +3,11 @@
 import json
 import os
 import subprocess
+import traceback
 import urllib.request
 import urllib.error
+import time
+import sys
 from dotenv import load_dotenv
 from openai import OpenAI
 from rich.console import Console
@@ -611,6 +614,122 @@ tool_definition = {
         }
     }
 }
+
+def stream_response_with_tps(stream, console):
+    """
+    Stream the response while tracking and displaying TPS (tokens per second).
+    
+    Args:
+        stream: The streaming response from the OpenAI API
+        console: Rich console for output (reserved for future use)
+    
+    Returns:
+        tuple: (full_content, tool_calls, finish_reason)
+    """
+    full_content = ""
+    tool_calls = []
+    finish_reason = None
+    
+    # TPS tracking variables
+    token_count = 0
+    start_time = time.time()
+    last_token_time = start_time
+    last_tps_update = start_time
+    suggestion_shown = False
+    has_content = False  # Track if we've received any content
+    
+    try:
+        for chunk in stream:
+            current_time = time.time()
+            
+            if not chunk.choices:
+                continue
+            
+            choice = chunk.choices[0]
+            delta = choice.delta
+            
+            # Track finish reason
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            
+            # Handle content streaming
+            if delta.content:
+                # Print header only when we first receive content
+                if not has_content:
+                    print("\033[96m💬 Response:\033[0m")
+                    has_content = True
+                
+                full_content += delta.content
+                # Print the content chunk
+                print(delta.content, end='', flush=True)
+                
+                # Estimate tokens (rough approximation: ~4 chars per token)
+                # This is approximate but sufficient for TPS display
+                token_count += max(1, len(delta.content) // 4)
+                last_token_time = current_time
+                
+                # Reset zero TPS tracking if we got tokens
+                suggestion_shown = False
+            
+            # Handle tool calls
+            if delta.tool_calls:
+                for tool_call_delta in delta.tool_calls:
+                    # Find or create the tool call in our list
+                    idx = tool_call_delta.index
+                    while len(tool_calls) <= idx:
+                        tool_calls.append({
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        })
+                    
+                    if tool_call_delta.id:
+                        tool_calls[idx]["id"] = tool_call_delta.id
+                    if tool_call_delta.function:
+                        if tool_call_delta.function.name:
+                            tool_calls[idx]["function"]["name"] = tool_call_delta.function.name
+                        if tool_call_delta.function.arguments:
+                            tool_calls[idx]["function"]["arguments"] += tool_call_delta.function.arguments
+                last_token_time = current_time
+            
+            # Update TPS display periodically (every 0.5 seconds)
+            if current_time - last_tps_update >= 0.5:
+                elapsed = current_time - start_time
+                if elapsed > 0 and token_count > 0:
+                    tps = token_count / elapsed
+                    # Display TPS on stderr so it doesn't interfere with content
+                    sys.stderr.write(f"\r\033[K\033[90m[TPS: {tps:.1f}]\033[0m")
+                    sys.stderr.flush()
+                last_tps_update = current_time
+            
+            # Check for zero TPS condition (simplified to 5 seconds total)
+            time_since_last_token = current_time - last_token_time
+            if time_since_last_token > 5.0 and token_count > 0 and not suggestion_shown:
+                # Show suggestion after 5 seconds of zero TPS
+                sys.stderr.write("\n\033[93m💡 Tip: If the response seems stuck, the model might be reasoning or processing. Try:\n")
+                sys.stderr.write("   • Waiting a bit longer (some models take time to think)\n")
+                sys.stderr.write("   • Simplifying your request\n")
+                sys.stderr.write("   • Trying a different model (^O to switch)\033[0m\n")
+                sys.stderr.flush()
+                suggestion_shown = True
+    
+    except Exception as e:
+        print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
+        print(f"\033[90m{traceback.format_exc()}\033[0m")
+    
+    finally:
+        # Cleanup code that should always run
+        if has_content:
+            print()  # New line after content
+        # Clear any remaining TPS display
+        sys.stderr.write("\r\033[K")
+        elapsed = time.time() - start_time
+        if elapsed > 0 and token_count > 0:
+            final_tps = token_count / elapsed
+            sys.stderr.write(f"\033[90m[Final TPS: {final_tps:.1f}, Total tokens: ~{token_count}]\033[0m\n")
+            sys.stderr.flush()
+    
+    return full_content, tool_calls, finish_reason
 
 def create_tools_map(client, console):
     """Create a tools map with closures that have access to client and console"""
@@ -1386,49 +1505,52 @@ def main():
                     api_params = {
                         "model": current_model,
                         "messages": messages,
-                        "tools": [tool_definition]
+                        "tools": [tool_definition],
+                        "stream": True  # Enable streaming
                     }
                     
                     # Add reasoning if enabled
                     if settings.get('reasoning_enabled', False):
                         api_params["extra_body"] = {"reasoning": {"effort": "high"}}
                     
-                    response = client.chat.completions.create(**api_params)
+                    # Create streaming response
+                    stream = client.chat.completions.create(**api_params)
                     
-                    assistant_message = response.choices[0].message
+                    # Stream the response with TPS tracking
+                    content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
                     
                     # Check if there are tool calls
-                    if assistant_message.tool_calls:
-                        print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in assistant_message.tool_calls]}\033[0m")
+                    if tool_calls_list:
+                        print(f"\033[96m🔧 Melon wants to run some commands: {[tc['function']['name'] for tc in tool_calls_list]}\033[0m")
                         
                         # Add assistant message with tool calls to history
                         messages.append({
                             "role": "assistant",
-                            "content": assistant_message.content,
+                            "content": content,
                             "tool_calls": [
                                 {
-                                    "id": tc.id,
+                                    "id": tc["id"],
                                     "type": "function",
                                     "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
+                                        "name": tc["function"]["name"],
+                                        "arguments": tc["function"]["arguments"]
                                     }
                                 }
-                                for tc in assistant_message.tool_calls
+                                for tc in tool_calls_list
                             ]
                         })
 
-                        for tool_call in assistant_message.tool_calls:
-                            print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
-                            function_name = tool_call.function.name
-                            function_args = json.loads(tool_call.function.arguments)
+                        for tool_call in tool_calls_list:
+                            print(f"\033[96m⏳ Running: {tool_call['function']['name']}...\033[0m")
+                            function_name = tool_call["function"]["name"]
+                            function_args = json.loads(tool_call["function"]["arguments"])
                             result = tools_map[function_name](**function_args)
                             print(f"\033[96m✅ Done!\033[0m")
                             
                             # Add tool result to messages
                             messages.append({
                                 "role": "tool",
-                                "tool_call_id": tool_call.id,
+                                "tool_call_id": tool_call["id"],
                                 "content": json.dumps(result)
                             })
 
@@ -1438,21 +1560,19 @@ def main():
                         # No more tool calls, we have a final response
                         messages.append({
                             "role": "assistant",
-                            "content": assistant_message.content
+                            "content": content
                         })
                         break
 
                 # Check if we hit max iterations
                 if iteration >= max_iterations:
                     print("\033[93m⚠️  Maximum iteration limit reached. Melon tried to make too many tool calls in succession.\033[0m")
-                    print(f"\033[90mDebug - Response object: {response}\033[0m")
                 # Check if response has content
-                elif assistant_message.content:
-                    print("\033[96m💬 Here's what Melon has to say:\033[0m")
-                    console.print(Markdown(assistant_message.content))
+                elif content:
+                    # Content was already displayed during streaming, no need to print again
+                    pass
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
-                    print(f"\033[90mDebug - Response object: {response}\033[0m")
                 
                 # Save conversation history after each successful interaction
                 # Skip the system message when saving (it's always added on load)
