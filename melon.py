@@ -656,7 +656,7 @@ def stream_response_with_tps(stream, console):
             if delta.content:
                 # Print header only when we first receive content
                 if not has_content:
-                    print("\033[96m💬 Response:\033[0m ")
+                    print("\033[96m💬 Response:\033[0m")
                     has_content = True
                 
                 full_content += delta.content
