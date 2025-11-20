@@ -39,7 +39,7 @@ FAVORITES_FILE = ".melon_favorites.json"
 SETTINGS_FILE = ".melon_settings.json"
 CHATS_DIR = ".melon_chats"
 DEFAULT_CHAT_NAME = "default"
-CURRENT_VERSION = "0.2.1"
+CURRENT_VERSION = "0.2.2"
 GITHUB_REPO = "NateSpencerWx/melon"
 
 def parse_version(version_string):
