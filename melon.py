@@ -1314,6 +1314,105 @@ def display_chat_history(messages, console):
             console.print("")
     
     console.print("[cyan]═══ End of History ═══[/cyan]\n")
+
+def process_file_mentions(user_input, console):
+    """
+    Process file mentions in user input (e.g., @file.txt or @/path/to/file.py).
+    Returns (processed_content, mentioned_files_info) where:
+    - processed_content: The message with file contents included
+    - mentioned_files_info: List of dicts with file info for display
+    """
+    import re
+    
+    # Pattern to match @filepath (supports absolute and relative paths)
+    # Matches @word, @./path, @../path, @/absolute/path, @~/home/path
+    # The pattern matches paths but stops at common sentence-ending punctuation
+    # followed by whitespace or end of string
+    pattern = r'@((?:[~./]|[a-zA-Z]:)?[^\s@,;!?]+)'
+    
+    matches = re.finditer(pattern, user_input)
+    mentioned_files = []
+    processed_content = user_input
+    file_contents_parts = []
+    
+    for match in matches:
+        filepath = match.group(1)
+        # Strip trailing punctuation if it's at the very end and preceded by alphanumeric
+        # This handles cases like "file.txt." or "file.py," but keeps valid paths
+        if len(filepath) > 1 and filepath[-1] in '.,:;' and filepath[-2].isalnum():
+            filepath = filepath[:-1]
+        
+        # Expand user home directory if present
+        expanded_path = os.path.expanduser(filepath)
+        
+        try:
+            # Check if file exists and is a file (not directory)
+            if not os.path.exists(expanded_path):
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "error",
+                    "message": "File not found"
+                })
+                continue
+            
+            if os.path.isdir(expanded_path):
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "error",
+                    "message": "Path is a directory, not a file"
+                })
+                continue
+            
+            # Check file size (limit to 1MB to avoid overwhelming the context)
+            file_size = os.path.getsize(expanded_path)
+            if file_size > 1024 * 1024:  # 1MB
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "error",
+                    "message": f"File too large ({file_size / 1024 / 1024:.1f}MB, max 1MB)"
+                })
+                continue
+            
+            # Read file contents
+            try:
+                with open(expanded_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "success",
+                    "lines": len(content.splitlines()),
+                    "size": file_size
+                })
+                
+                # Add file content to the message
+                file_contents_parts.append(f"\n\n--- Content of @{filepath} ---\n{content}\n--- End of @{filepath} ---")
+                
+            except UnicodeDecodeError:
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "error",
+                    "message": "File is not a text file (binary content)"
+                })
+            except PermissionError:
+                mentioned_files.append({
+                    "path": filepath,
+                    "status": "error",
+                    "message": "Permission denied"
+                })
+        except Exception as e:
+            mentioned_files.append({
+                "path": filepath,
+                "status": "error",
+                "message": str(e)
+            })
+    
+    # If we have file contents, append them to the processed content
+    if file_contents_parts:
+        processed_content = user_input + "".join(file_contents_parts)
+    
+    return processed_content, mentioned_files
+
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -1544,8 +1643,21 @@ def main():
             print("\n\033[93mThinking...\033[0m")
 
             try:
-                # Add user message to conversation
-                messages.append({"role": "user", "content": user_input})
+                # Process file mentions (e.g., @file.txt)
+                processed_input, mentioned_files = process_file_mentions(user_input, console)
+                
+                # Display information about mentioned files
+                if mentioned_files:
+                    console.print("\n[cyan]📎 File Mentions:[/cyan]")
+                    for file_info in mentioned_files:
+                        if file_info["status"] == "success":
+                            console.print(f"  [green]✓[/green] @{file_info['path']} ({file_info['lines']} lines, {file_info['size']} bytes)")
+                        else:
+                            console.print(f"  [red]✗[/red] @{file_info['path']}: {file_info['message']}")
+                    print()
+                
+                # Add user message to conversation (with file contents if any)
+                messages.append({"role": "user", "content": processed_input})
                 print("\033[96m🤔 Getting a response from Melon...\033[0m")
                 
                 # Handle tool calls in a loop until we get a final response
