@@ -9,7 +9,7 @@ import urllib.error
 import time
 import sys
 from dotenv import load_dotenv
-from openai import OpenAI, BadRequestError
+from openai import OpenAI, BadRequestError, APIError
 from rich.console import Console
 from rich.markdown import Markdown
 from prompt_toolkit import PromptSession
@@ -597,6 +597,21 @@ def run_terminal_command(command: str, client=None, console=None):
     except Exception as e:
         return {"error": str(e)}
 
+def has_tool_calls_in_history(messages):
+    """
+    Check if messages contain tool calls or tool role messages.
+    
+    Args:
+        messages: List of message dictionaries
+        
+    Returns:
+        True if messages contain tool calls or tool results, False otherwise
+    """
+    for msg in messages:
+        if msg.get("role") == "tool" or (msg.get("role") == "assistant" and msg.get("tool_calls")):
+            return True
+    return False
+
 def convert_tool_calls_to_plain_text(messages):
     """
     Convert messages with tool calls to plain text format.
@@ -765,9 +780,20 @@ def stream_response_with_tps(stream, console):
                 sys.stderr.flush()
                 suggestion_shown = True
     
+    except APIError as e:
+        # Handle API errors during streaming (e.g., "Provider returned error")
+        error_msg = str(e)
+        print(f"\n\033[91m❌ Streaming error: {error_msg}\033[0m")
+        # Don't print full traceback for API errors as they're usually provider issues
+        if "provider returned error" in error_msg.lower():
+            print(f"\033[93m💡 This may be due to model incompatibility with tool calls in history.\033[0m")
+        # Re-raise to let the caller handle it
+        raise
     except Exception as e:
         print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
         print(f"\033[90m{traceback.format_exc()}\033[0m")
+        # Re-raise to let the caller handle it
+        raise
     
     finally:
         # Cleanup code that should always run
@@ -1553,13 +1579,25 @@ def main():
                 iteration = 0
                 
                 while iteration < max_iterations:
+                    # Check if messages contain tool calls that need conversion
+                    # This handles models like Gemini that don't support tool call format in history
+                    needs_conversion = has_tool_calls_in_history(messages)
+                    
                     # Build API call parameters
                     api_params = {
                         "model": current_model,
                         "messages": messages,
-                        "tools": [tool_definition],
                         "stream": True  # Enable streaming
                     }
+                    
+                    # Only include tools if we haven't done tool calls yet
+                    # (first iteration or models that support tool calls in history)
+                    if not needs_conversion:
+                        api_params["tools"] = [tool_definition]
+                    else:
+                        # Convert messages to plain text for models that don't support tool calls in history
+                        print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
+                        api_params["messages"] = convert_tool_calls_to_plain_text(messages)
                     
                     # Add reasoning if enabled
                     if settings.get('reasoning_enabled', False):
@@ -1568,27 +1606,49 @@ def main():
                     try:
                         # Create streaming response
                         stream = client.chat.completions.create(**api_params)
+                        
+                        # Stream the response with TPS tracking
+                        try:
+                            content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
+                        except APIError as stream_error:
+                            # Handle streaming errors that might occur with tool call history
+                            error_msg = str(stream_error)
+                            if "provider returned error" in error_msg.lower() and not needs_conversion:
+                                # Retry with converted messages
+                                print("\033[93m⚠️  Streaming failed. Retrying with converted message format...\033[0m")
+                                converted_messages = convert_tool_calls_to_plain_text(messages)
+                                api_params["messages"] = converted_messages
+                                if "tools" in api_params:
+                                    del api_params["tools"]
+                                
+                                # Retry the API call
+                                stream = client.chat.completions.create(**api_params)
+                                content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
+                            else:
+                                # Re-raise if it's not a tool call compatibility issue
+                                raise
+                        
                     except BadRequestError as e:
-                        # Some models (like Google Gemini) don't support tool calls in message history
+                        # Fallback: Some models may still throw BadRequestError
                         # Convert to plain text and retry without tools
                         error_message = str(e)
                         if "invalid argument" in error_message.lower() or "provider returned error" in error_message.lower():
-                            print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
+                            if not needs_conversion:  # Only print if we haven't already converted
+                                print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
                             
                             # Convert tool call history to plain text
                             converted_messages = convert_tool_calls_to_plain_text(messages)
                             
                             # Retry without tools parameter
                             api_params["messages"] = converted_messages
-                            del api_params["tools"]  # Remove tools from the API call
+                            if "tools" in api_params:
+                                del api_params["tools"]  # Remove tools from the API call
                             
                             stream = client.chat.completions.create(**api_params)
+                            content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
                         else:
                             # Re-raise if it's a different error
                             raise
-                    
-                    # Stream the response with TPS tracking
-                    content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
                     
                     # Check if there are tool calls
                     if tool_calls_list:
