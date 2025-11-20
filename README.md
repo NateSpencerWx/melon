@@ -30,6 +30,7 @@ Supported path formats:
 - Absolute paths: `@/absolute/path/to/file.txt`
 - Relative paths: `@./relative/path/file.py` or `@../parent/file.js`
 - Home directory: `@~/Documents/report.md`
+- Paths with spaces: `@"path/to/file with spaces.txt"` or `@'another file.py'`
 
 Notes:
 - File size is limited to 1MB to avoid overwhelming the AI context

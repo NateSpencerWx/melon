@@ -1325,10 +1325,12 @@ def process_file_mentions(user_input, console):
     import re
     
     # Pattern to match @filepath (supports absolute and relative paths)
-    # Matches @word, @./path, @../path, @/absolute/path, @~/home/path
-    # The pattern matches paths but stops at common sentence-ending punctuation
-    # followed by whitespace or end of string
-    pattern = r'@((?:[~./]|[a-zA-Z]:)?[^\s@,;!?]+)'
+    # Matches:
+    # - @"path with spaces" (quoted paths)
+    # - @'path with spaces' (single quoted paths)
+    # - @word, @./path, @../path, @/absolute/path, @~/home/path (unquoted paths)
+    # The unquoted pattern stops at common sentence-ending punctuation or whitespace
+    pattern = r'@(?:"([^"]+)"|\'([^\']+)\'|((?:[~./]|[a-zA-Z]:)?[^\s@,;!?]+))'
     
     matches = re.finditer(pattern, user_input)
     mentioned_files = []
@@ -1336,11 +1338,14 @@ def process_file_mentions(user_input, console):
     file_contents_parts = []
     
     for match in matches:
-        filepath = match.group(1)
-        # Strip trailing punctuation if it's at the very end and preceded by alphanumeric
-        # This handles cases like "file.txt." or "file.py," but keeps valid paths
-        if len(filepath) > 1 and filepath[-1] in '.,:;' and filepath[-2].isalnum():
-            filepath = filepath[:-1]
+        # Extract filepath from the matching group (could be in group 1, 2, or 3)
+        filepath = match.group(1) or match.group(2) or match.group(3)
+        
+        # Strip trailing punctuation only for unquoted paths
+        # (quoted paths preserve all characters)
+        if match.group(3):  # Unquoted path
+            if len(filepath) > 1 and filepath[-1] in '.,:;' and filepath[-2].isalnum():
+                filepath = filepath[:-1]
         
         # Expand user home directory if present
         expanded_path = os.path.expanduser(filepath)
