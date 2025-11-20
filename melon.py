@@ -726,12 +726,17 @@ def stream_response_with_tps(stream, console):
                 finish_reason = choice.finish_reason
             
             # Capture reasoning field if present (OpenRouter extended response)
-            # The reasoning field is accessed via the chunk's model_extra or similar extension
+            # OpenRouter may return reasoning in various locations depending on the provider
             if hasattr(delta, 'reasoning') and delta.reasoning:
                 reasoning = delta.reasoning
-            # Also check in the chunk itself for OpenRouter's extended format
+            # Check model_extra for Pydantic v2 extra fields
+            elif hasattr(delta, 'model_extra') and delta.model_extra and 'reasoning' in delta.model_extra:
+                reasoning = delta.model_extra.get('reasoning')
+            # Also check in the chunk itself
             elif hasattr(chunk, 'reasoning') and chunk.reasoning:
                 reasoning = chunk.reasoning
+            elif hasattr(chunk, 'model_extra') and chunk.model_extra and 'reasoning' in chunk.model_extra:
+                reasoning = chunk.model_extra.get('reasoning')
             
             # Handle content streaming
             if delta.content:
