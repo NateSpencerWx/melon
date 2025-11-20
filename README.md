@@ -21,6 +21,8 @@ Melon will suggest a command, review it for safety, and execute it if verified s
 
 You can mention files in your requests using the `@` symbol followed by a file path. Melon will automatically read the file contents and include them in the context sent to the AI.
 
+**Autocomplete:** When you type `@` followed by a path, press **Tab** to see file suggestions. The autocomplete shows available files and directories with their sizes, making it easy to find and reference files.
+
 Examples:
 - `"Can you explain what @/path/to/script.py does?"`
 - `"Review @./config.json and suggest improvements"`
@@ -36,3 +38,4 @@ Notes:
 - File size is limited to 1MB to avoid overwhelming the AI context
 - Binary files and directories are automatically excluded with error messages
 - Multiple files can be mentioned in a single request
+- Use Tab for autocomplete when typing file paths after `@`

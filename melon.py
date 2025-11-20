@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.completion import Completer, Completion
 
 LOGO = """
 ╔═══════════════════════════════════════════════════════════╗
@@ -1092,6 +1093,101 @@ def handle_chat_management(console, settings):
     return settings
 
 
+class FilePathCompleter(Completer):
+    """Custom completer that provides file path suggestions after @ symbol"""
+    
+    def get_completions(self, document, complete_event):
+        """Generate file path completions for text after @ symbol"""
+        text = document.text_before_cursor
+        
+        # Find the last @ symbol
+        at_index = text.rfind('@')
+        if at_index == -1:
+            return
+        
+        # Get the partial path after @
+        partial_path = text[at_index + 1:]
+        
+        # Handle quoted paths
+        quote = None
+        if partial_path.startswith('"') or partial_path.startswith("'"):
+            quote = partial_path[0]
+            partial_path = partial_path[1:]
+        
+        # Expand ~ if present
+        partial_path_expanded = os.path.expanduser(partial_path) if partial_path else '.'
+        
+        # Get directory and filename parts
+        if os.path.isdir(partial_path_expanded):
+            directory = partial_path_expanded
+            filename_part = ''
+        else:
+            directory = os.path.dirname(partial_path_expanded) or '.'
+            filename_part = os.path.basename(partial_path_expanded)
+        
+        # List files in the directory
+        try:
+            if os.path.isdir(directory):
+                entries = os.listdir(directory)
+                
+                for entry in sorted(entries):
+                    # Skip hidden files unless user is typing them
+                    if entry.startswith('.') and not filename_part.startswith('.'):
+                        continue
+                    
+                    # Filter by what user has typed
+                    if entry.lower().startswith(filename_part.lower()):
+                        full_path = os.path.join(directory, entry)
+                        is_dir = os.path.isdir(full_path)
+                        
+                        # Calculate display path
+                        if directory == '.':
+                            display = entry
+                        else:
+                            # Show the path relative to what user typed
+                            if partial_path:
+                                base_dir = os.path.dirname(partial_path) or ''
+                                if base_dir:
+                                    display = os.path.join(base_dir, entry)
+                                else:
+                                    display = entry
+                            else:
+                                display = entry
+                        
+                        # Add / for directories to indicate they can be expanded
+                        suffix = '/' if is_dir else ''
+                        display_text = display + suffix
+                        
+                        # Show file size and type for files
+                        if not is_dir:
+                            try:
+                                size = os.path.getsize(full_path)
+                                if size < 1024:
+                                    size_str = f"{size}B"
+                                elif size < 1024 * 1024:
+                                    size_str = f"{size/1024:.1f}KB"
+                                else:
+                                    size_str = f"{size/1024/1024:.1f}MB"
+                                display_meta = f"[{size_str}]"
+                            except (OSError, PermissionError):
+                                display_meta = ""
+                        else:
+                            display_meta = "[DIR]"
+                        
+                        # For completion, we only replace from the filename part
+                        start_position = -len(filename_part)
+                        
+                        yield Completion(
+                            entry + suffix,
+                            start_position=start_position,
+                            display=display_text,
+                            display_meta=display_meta
+                        )
+        except (OSError, PermissionError):
+            # Can't read directory, no completions
+            pass
+
+
 def create_input_session():
     """Create a prompt session with Ctrl key bindings"""
     kb = KeyBindings()
@@ -1120,7 +1216,10 @@ def create_input_session():
         KeyAction.action = 'switch_chat'
         event.app.exit(result='__CTRL_S__')
     
-    session = PromptSession(key_bindings=kb)
+    # Create completer for file paths after @
+    completer = FilePathCompleter()
+    
+    session = PromptSession(key_bindings=kb, completer=completer)
     return session, KeyAction
 
 
