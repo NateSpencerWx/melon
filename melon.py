@@ -3,10 +3,13 @@
 import json
 import os
 import subprocess
+import traceback
 import urllib.request
 import urllib.error
+import time
+import sys
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 from rich.console import Console
 from rich.markdown import Markdown
 from prompt_toolkit import PromptSession
@@ -252,6 +255,26 @@ def list_chats():
     except Exception:
         return []
 
+def get_most_recent_chat(chats):
+    """Get the most recently created/modified chat from a list of chat names"""
+    if not chats:
+        return None
+    try:
+        chat_files = []
+        for chat_name in chats:
+            chat_file = get_chat_file(chat_name)
+            if os.path.exists(chat_file):
+                mtime = os.path.getmtime(chat_file)
+                chat_files.append((chat_name, mtime))
+        
+        if chat_files:
+            # Sort by modification time, newest first
+            chat_files.sort(key=lambda x: x[1], reverse=True)
+            return chat_files[0][0]
+        return chats[0]  # Fallback to first chat if timestamps unavailable
+    except Exception:
+        return chats[0] if chats else None
+
 def load_history(chat_name=None):
     """Load conversation history from a specific chat file with error recovery"""
     if chat_name is None:
@@ -325,9 +348,6 @@ def save_history(history, chat_name=None):
 
 def delete_chat(chat_name):
     """Delete a specific chat"""
-    if chat_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot delete the default chat"
-    
     chat_file = get_chat_file(chat_name)
     try:
         if os.path.exists(chat_file):
@@ -339,9 +359,6 @@ def delete_chat(chat_name):
 
 def rename_chat(old_name, new_name):
     """Rename a chat"""
-    if old_name == DEFAULT_CHAT_NAME:
-        return False, "Cannot rename the default chat"
-    
     if new_name == DEFAULT_CHAT_NAME:
         return False, f"Cannot use '{DEFAULT_CHAT_NAME}' as a name"
     
@@ -358,11 +375,51 @@ def rename_chat(old_name, new_name):
     except Exception as e:
         return False, f"Error renaming chat: {e}"
 
+def save_unsaved_chat(is_new_unsaved_chat, messages, client, settings):
+    """
+    Save an unsaved chat with user messages.
+    
+    Args:
+        is_new_unsaved_chat: Whether this is a new unsaved chat
+        messages: List of chat messages
+        client: OpenAI client for chat naming
+        settings: Settings dictionary
+    
+    Returns:
+        tuple: (success: bool, chat_name: str or None, error: str or None)
+    """
+    import time
+    
+    if not is_new_unsaved_chat or len([m for m in messages if m.get("role") == "user"]) == 0:
+        return False, None, "No unsaved chat with user messages"
+    
+    try:
+        chat_name = generate_chat_name(messages[1:], client)
+        if not save_history(messages[1:], chat_name):
+            raise RuntimeError("Failed to save chat history")
+        settings["active_chat"] = chat_name
+        save_settings(settings)
+        return True, chat_name, None
+    except Exception as e:
+        # Fallback to timestamp-based name
+        try:
+            chat_name = f"chat-{int(time.time())}"
+            if not save_history(messages[1:], chat_name):
+                raise RuntimeError("Failed to save chat history with timestamp")
+            settings["active_chat"] = chat_name
+            save_settings(settings)
+            return True, chat_name, str(e)
+        except Exception as fallback_error:
+            return False, None, str(fallback_error)
+
+
+
+
 def generate_chat_name(messages, client, current_name=None):
     """
-    Use AI to generate a descriptive name for a chat based on its messages.
+    Use AI to generate a descriptive name for a chat based on the first user message.
     Returns a short, descriptive name (2-4 words max).
-    For dynamic renaming, uses recent messages to reflect current conversation topic.
+    This is called when a new chat is created to name it based on the first user message. It is not used for dynamic renaming.
     """
     try:
         # Get user messages to understand the topic
@@ -372,13 +429,9 @@ def generate_chat_name(messages, client, current_name=None):
             import time
             return f"chat-{int(time.time())}"
         
-        # For dynamic renaming, focus on recent messages to capture topic evolution
-        # Use last 3-5 user messages for better context of current conversation
-        recent_count = min(5, len(user_messages))
-        recent_messages = user_messages[-recent_count:]
-        
-        # Build context from recent messages
-        context = " ".join([msg.get("content", "")[:150] for msg in recent_messages])
+        # Use only the FIRST user message for naming (not recent messages)
+        first_message = user_messages[0]
+        context = first_message.get("content", "")[:300]  # Use more of the first message
         
         response = client.chat.completions.create(
             model=SAFETY_MODEL,
@@ -428,40 +481,6 @@ def generate_chat_name(messages, client, current_name=None):
         import time
         return f"chat-{int(time.time())}"
 
-def dynamic_rename_chat(messages, client, current_chat, settings):
-    """
-    Dynamically rename a chat based on the current conversation.
-    Returns (success, new_name, message)
-    """
-    # Don't rename the default chat
-    if current_chat == DEFAULT_CHAT_NAME:
-        return False, current_chat, "Default chat cannot be renamed"
-    
-    try:
-        # Generate a new name based on current conversation
-        new_name = generate_chat_name(messages, client, current_name=current_chat)
-        
-        # If the name hasn't changed significantly, don't rename
-        if new_name == current_chat:
-            return False, current_chat, "Chat name unchanged"
-        
-        # Rename the chat file
-        old_file = get_chat_file(current_chat)
-        new_file = get_chat_file(new_name)
-        
-        if os.path.exists(old_file):
-            os.rename(old_file, new_file)
-            
-            # Update settings to reflect new name
-            settings["active_chat"] = new_name
-            save_settings(settings)
-            
-            return True, new_name, f"Chat renamed from '{current_chat}' to '{new_name}'"
-        else:
-            return False, current_chat, f"Chat file not found"
-    
-    except Exception as e:
-        return False, current_chat, f"Error during dynamic rename: {e}"
 
 def is_command_modifying(command: str, client) -> tuple[bool, str]:
     """
@@ -570,13 +589,65 @@ def run_terminal_command(command: str, client=None, console=None):
     
     # Execute the command
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         output = result.stdout + result.stderr
         return {"output": output, "returncode": result.returncode}
     except subprocess.TimeoutExpired:
         return {"error": "Command timed out after 60 seconds"}
     except Exception as e:
         return {"error": str(e)}
+
+def convert_tool_calls_to_plain_text(messages):
+    """
+    Convert messages with tool calls to plain text format.
+    This is used as a fallback when models don't support tool call format in history.
+    
+    Args:
+        messages: List of message dictionaries
+        
+    Returns:
+        List of converted messages without tool_calls or tool role messages
+    """
+    converted_messages = []
+    
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            # Convert assistant message with tool calls to plain text
+            tool_calls = msg.get("tool_calls", [])
+            tool_descriptions = []
+            
+            for tc in tool_calls:
+                func_name = tc.get("function", {}).get("name", "unknown")
+                func_args = tc.get("function", {}).get("arguments", "{}")
+                tool_descriptions.append(f"You did this tool call: {func_name} with arguments {func_args}")
+            
+            # Create a text-only version
+            content = msg.get("content", "")
+            if tool_descriptions:
+                tool_text = "\n".join(tool_descriptions)
+                if content:
+                    plain_content = f"{content}\n\n{tool_text}"
+                else:
+                    plain_content = tool_text
+            else:
+                plain_content = content or ""
+            
+            converted_messages.append({
+                "role": "assistant",
+                "content": plain_content
+            })
+        elif msg.get("role") == "tool":
+            # Convert tool result to plain text as a user message
+            tool_content = msg.get("content", "")
+            converted_messages.append({
+                "role": "user",
+                "content": f"Tool result: {tool_content}"
+            })
+        else:
+            # Keep other messages as-is
+            converted_messages.append(msg)
+    
+    return converted_messages
 
 tool_definition = {
     "type": "function",
@@ -595,6 +666,122 @@ tool_definition = {
         }
     }
 }
+
+def stream_response_with_tps(stream, console):
+    """
+    Stream the response while tracking and displaying TPS (tokens per second).
+    
+    Args:
+        stream: The streaming response from the OpenAI API
+        console: Rich console for output (reserved for future use)
+    
+    Returns:
+        tuple: (full_content, tool_calls, finish_reason)
+    """
+    full_content = ""
+    tool_calls = []
+    finish_reason = None
+    
+    # TPS tracking variables
+    token_count = 0
+    start_time = time.time()
+    last_token_time = start_time
+    last_tps_update = start_time
+    suggestion_shown = False
+    has_content = False  # Track if we've received any content
+    
+    try:
+        for chunk in stream:
+            current_time = time.time()
+            
+            if not chunk.choices:
+                continue
+            
+            choice = chunk.choices[0]
+            delta = choice.delta
+            
+            # Track finish reason
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            
+            # Handle content streaming
+            if delta.content:
+                # Print header only when we first receive content
+                if not has_content:
+                    print("\033[96m💬 Response:\033[0m")
+                    has_content = True
+                
+                full_content += delta.content
+                # Print the content chunk
+                print(delta.content, end='', flush=True)
+                
+                # Estimate tokens (rough approximation: ~4 chars per token)
+                # This is approximate but sufficient for TPS display
+                token_count += max(1, len(delta.content) // 4)
+                last_token_time = current_time
+                
+                # Reset zero TPS tracking if we got tokens
+                suggestion_shown = False
+            
+            # Handle tool calls
+            if delta.tool_calls:
+                for tool_call_delta in delta.tool_calls:
+                    # Find or create the tool call in our list
+                    idx = tool_call_delta.index
+                    while len(tool_calls) <= idx:
+                        tool_calls.append({
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        })
+                    
+                    if tool_call_delta.id:
+                        tool_calls[idx]["id"] = tool_call_delta.id
+                    if tool_call_delta.function:
+                        if tool_call_delta.function.name:
+                            tool_calls[idx]["function"]["name"] = tool_call_delta.function.name
+                        if tool_call_delta.function.arguments:
+                            tool_calls[idx]["function"]["arguments"] += tool_call_delta.function.arguments
+                last_token_time = current_time
+            
+            # Update TPS display periodically (every 0.5 seconds)
+            if current_time - last_tps_update >= 0.5:
+                elapsed = current_time - start_time
+                if elapsed > 0 and token_count > 0:
+                    tps = token_count / elapsed
+                    # Display TPS on stderr so it doesn't interfere with content
+                    sys.stderr.write(f"\r\033[K\033[90m[TPS: {tps:.1f}]\033[0m")
+                    sys.stderr.flush()
+                last_tps_update = current_time
+            
+            # Check for zero TPS condition (simplified to 5 seconds total)
+            time_since_last_token = current_time - last_token_time
+            if time_since_last_token > 5.0 and token_count > 0 and not suggestion_shown:
+                # Show suggestion after 5 seconds of zero TPS
+                sys.stderr.write("\n\033[93m💡 Tip: If the response seems stuck, the model might be reasoning or processing. Try:\n")
+                sys.stderr.write("   • Waiting a bit longer (some models take time to think)\n")
+                sys.stderr.write("   • Simplifying your request\n")
+                sys.stderr.write("   • Trying a different model (^O to switch)\033[0m\n")
+                sys.stderr.flush()
+                suggestion_shown = True
+    
+    except Exception as e:
+        print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
+        print(f"\033[90m{traceback.format_exc()}\033[0m")
+    
+    finally:
+        # Cleanup code that should always run
+        if has_content:
+            print()  # New line after content
+        # Clear any remaining TPS display
+        sys.stderr.write("\r\033[K")
+        elapsed = time.time() - start_time
+        if elapsed > 0 and token_count > 0:
+            final_tps = token_count / elapsed
+            sys.stderr.write(f"\033[90m[Final TPS: {final_tps:.1f}, Total tokens: ~{token_count}]\033[0m\n")
+            sys.stderr.flush()
+    
+    return full_content, tool_calls, finish_reason
 
 def create_tools_map(client, console):
     """Create a tools map with closures that have access to client and console"""
@@ -850,8 +1037,8 @@ def handle_chat_management(console, settings):
     
     elif choice == "4":
         # Delete chat
-        if not chats or len(chats) == 1:
-            console.print("[yellow]Need at least 2 chats to delete one[/yellow]")
+        if not chats:
+            console.print("[yellow]No chats available to delete[/yellow]")
             return settings
         
         console.print("\n[cyan]Select a chat to delete:[/cyan]")
@@ -867,11 +1054,26 @@ def handle_chat_management(console, settings):
                     success, message = delete_chat(chat_name)
                     if success:
                         console.print(f"[green]✓ {message}[/green]")
-                        # Switch to default if we deleted the active chat
+                        # Switch to most recent chat if we deleted the active chat
                         if settings.get("active_chat") == chat_name:
-                            settings["active_chat"] = DEFAULT_CHAT_NAME
-                            save_settings(settings)
-                            console.print(f"[yellow]Switched to '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
+                                settings["active_chat"] = new_chat
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
                     else:
                         console.print(f"[red]{message}[/red]")
                 else:
@@ -913,7 +1115,7 @@ def create_input_session():
         KeyAction.action = 'reasoning'
         event.app.exit(result='__CTRL_R__')
     
-    @kb.add('c-s')  # Ctrl+S for switching chats
+    @kb.add('c-s')  # Ctrl+S for switching/deleting chats
     def _(event):
         KeyAction.action = 'switch_chat'
         event.app.exit(result='__CTRL_S__')
@@ -922,13 +1124,26 @@ def create_input_session():
     return session, KeyAction
 
 
-def display_status(console, current_model, settings):
-    """Show the current model and reasoning status with quick command hints"""
+def display_status(console, current_model, settings, active_chat=None):
+    """Show the current model and reasoning status with quick command hints
+    
+    Args:
+        console: Rich console for output
+        current_model: The currently selected model
+        settings: Settings dictionary
+        active_chat: The name of the active chat, or None for unsaved new chats
+    """
     reasoning_on = settings.get("reasoning_enabled", False)
     reasoning_label = "[green]ON[/green]" if reasoning_on else "[red]OFF[/red]"
-    active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
+    
+    # Handle unsaved new chats
+    if active_chat is None:
+        chat_display = "[yellow](new - unsaved)[/yellow]"
+    else:
+        chat_display = active_chat
+    
     console.print(
-        f"[bold cyan]Chat[/bold cyan]: {active_chat}    "
+        f"[bold cyan]Chat[/bold cyan]: {chat_display}    "
         f"[bold cyan]Model[/bold cyan]: {current_model}    "
         f"[bold cyan]Reasoning[/bold cyan]: {reasoning_label}"
     )
@@ -962,7 +1177,16 @@ def handle_settings(console):
 
 
 def handle_chat_switch(console, settings, current_chat):
-    """Handle switching between chats"""
+    """Handle switching between chats
+    
+    Args:
+        console: Rich console for output
+        settings: Settings dictionary
+        current_chat: The currently active chat name, or None if in a new unsaved chat
+    
+    Returns:
+        The selected chat name, or current_chat if cancelled/invalid
+    """
     chats = list_chats()
     
     if not chats:
@@ -974,21 +1198,75 @@ def handle_chat_switch(console, settings, current_chat):
         # Load history to get message count
         history = load_history(chat)
         msg_count = len(history)
-        current_marker = " ← current" if chat == current_chat else ""
+        # Only show current marker if current_chat is not None and matches
+        current_marker = " ← current" if current_chat is not None and chat == current_chat else ""
         console.print(f"  [{i}] {chat} ({msg_count} messages){current_marker}")
     
-    console.print("\n[dim]Enter number to switch, or press Enter to cancel[/dim]")
+    console.print("\n[dim]Enter number to switch, 'd' + number to delete (e.g., 'd2'), or press Enter to cancel[/dim]")
     choice = input("\033[95m> \033[0m").strip()
     
     if not choice:
         console.print("[yellow]Cancelled[/yellow]")
         return current_chat
     
+    # Check if user wants to delete a chat
+    if choice.lower().startswith('d'):
+        delete_choice = choice[1:].strip()
+        try:
+            idx = int(delete_choice) - 1
+            if 0 <= idx < len(chats):
+                chat_to_delete = chats[idx]
+                
+                 # Confirm deletion
+                confirm = input(f"\033[95m⚠️  Delete chat '{chat_to_delete}'? This cannot be undone. (yes/no): \033[0m").strip().lower()
+                if confirm == "yes":
+                    success, message = delete_chat(chat_to_delete)
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        # If we deleted the current chat, need to switch to another chat
+                        if current_chat == chat_to_delete:
+                            # Get remaining chats after deletion
+                            remaining_chats = list_chats()
+                            if remaining_chats:
+                                # Switch to the most recently created chat
+                                new_chat = get_most_recent_chat(remaining_chats)
+                                settings["active_chat"] = new_chat
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Switched to '{new_chat}' chat[/yellow]")
+                                    return new_chat
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                                    return new_chat
+                            else:
+                                # No chats left, create a new default chat
+                                save_history([], DEFAULT_CHAT_NAME)
+                                settings["active_chat"] = DEFAULT_CHAT_NAME
+                                if save_settings(settings):
+                                    console.print(f"[yellow]Created new '{DEFAULT_CHAT_NAME}' chat[/yellow]")
+                                else:
+                                    console.print("[red]Failed to save settings. You may need to restart Melon.[/red]")
+                                return DEFAULT_CHAT_NAME
+                        return current_chat
+                    else:
+                        console.print(f"[red]{message}[/red]")
+                        return current_chat
+                else:
+                    console.print("[yellow]Deletion cancelled[/yellow]")
+                    return current_chat
+            else:
+                console.print("[red]Invalid selection[/red]")
+                return current_chat
+        except ValueError:
+            console.print("[red]Invalid input for delete operation[/red]")
+            return current_chat
+    
+    # Otherwise, try to switch to a chat
     try:
         idx = int(choice) - 1
         if 0 <= idx < len(chats):
             selected_chat = chats[idx]
-            if selected_chat != current_chat:
+            # When current_chat is None (new unsaved chat), always allow switching
+            if current_chat is None or selected_chat != current_chat:
                 # Update settings
                 settings["active_chat"] = selected_chat
                 save_settings(settings)
@@ -1009,7 +1287,33 @@ def handle_chat_switch(console, settings, current_chat):
         return current_chat
 
 
-
+def display_chat_history(messages, console):
+    """Display previous messages from chat history to the user"""
+    # Filter out system messages, tool messages, and assistant messages with tool_calls
+    user_messages = [
+        m for m in messages
+        if m.get("role") == "user"
+        or (m.get("role") == "assistant" and "tool_calls" not in m)
+    ]
+    
+    if not user_messages:
+        return
+    
+    console.print("\n[cyan]═══ Previous Messages ═══[/cyan]\n")
+    
+    for msg in user_messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        
+        if role == "user" and content:
+            console.print(f"[bold magenta]🍉 You:[/bold magenta]")
+            console.print(f"[magenta]{content}[/magenta]\n")
+        elif role == "assistant" and content:
+            console.print(f"[bold cyan]🤖 Melon:[/bold cyan]")
+            console.print(Markdown(content))
+            console.print("")
+    
+    console.print("[cyan]═══ End of History ═══[/cyan]\n")
 def main():
     print("\033[91m" + LOGO + "\033[0m")  # Red color
     console = Console()
@@ -1020,7 +1324,7 @@ def main():
         display_update_notification(latest_)
     elif not has_update and latest_ and not error:
         # Successfully checked and no update available
-        print("\033[92m✓ Melon is up to date ( {0})\033[0m\n".format(CURRENT_VERSION))
+        print("\033[92m✓ Melon is up to date ({0})\033[0m\n".format(CURRENT_VERSION))
     
     load_dotenv()
     api_key = os.getenv('OPENROUTER_API_KEY')
@@ -1082,8 +1386,7 @@ def main():
     # Initialize current model and settings
     current_model = DEFAULT_MODEL
     settings = load_settings()
-    active_chat = settings.get("active_chat", DEFAULT_CHAT_NAME)
-
+    
     # Migrate old single-file history if it exists
     migrate_old_history()
 
@@ -1102,22 +1405,12 @@ def main():
         )
     }
     
-    # Load persisted conversation history from active chat
-    loaded_history = load_history(active_chat)
-    if loaded_history:
-        # Verify the first message is a system message, if not prepend it
-        if loaded_history[0].get("role") != "system":
-            messages = [system_message] + loaded_history
-        else:
-            # Replace the old system message with the current one
-            messages = [system_message] + loaded_history[1:]
-        # Calculate actual conversation messages (excluding system message)
-        conversation_count = len([m for m in messages if m.get("role") != "system"])
-        print(f"\033[92m✓ Loaded {conversation_count} conversation messages from '{active_chat}' chat\033[0m\n")
-    else:
-        messages = [system_message]
+    # Start in a new, unsaved chat on every launch
+    messages = [system_message]
+    active_chat = None
+    is_new_unsaved_chat = True
 
-    print("\033[96m💡 Use ^N for new chat, ^S to switch chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
+    print("\033[96m💡 Use ^N for new chat, ^S to switch/delete chat, ^O for model, ^R for reasoning. Press ^C to exit.\033[0m")
     print("\033[90m" + "─" * 60 + "\033[0m\n")
     
     # Create prompt session with key bindings
@@ -1125,45 +1418,67 @@ def main():
     
     while True:
         try:
-            display_status(console, current_model, settings)
+            display_status(console, current_model, settings, active_chat)
             
             # Use prompt_toolkit session for input with key bindings
             try:
                 user_input = session.prompt(ANSI("\033[95m🍉 \033[0m")).strip()
             except KeyboardInterrupt:
+                # Save unsaved chat before exiting
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
+                    console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
+                    success, chat_name, error = save_unsaved_chat(is_new_unsaved_chat, messages, client, settings)
+                    if success:
+                        if error:
+                            console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                        console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             except EOFError:
+                # Save unsaved chat before exiting
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
+                    console.print("\n[cyan]Saving current chat before exiting...[/cyan]")
+                    success, chat_name, error = save_unsaved_chat(is_new_unsaved_chat, messages, client, settings)
+                    if success:
+                        if error:
+                            console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                        console.print(f"[green]✓ Saved to '{chat_name}'[/green]")
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
                 print("\n\033[91m👋 Thanks for using Melon!\033[0m")
                 break
             
             # Check if a keyboard shortcut was triggered
             if user_input == '__CTRL_N__':
                 # Ctrl+N - Create new chat
-                if len(messages) > 1:  # Has some conversation
-                    console.print("\n[cyan]Creating new chat...[/cyan]")
-                    # Generate name based on current conversation
-                    chat_name = generate_chat_name(messages, client)
-                    console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                if len([m for m in messages if m.get("role") == "user"]) > 0:  # Has user messages
+                    console.print("\n[cyan]Saving current chat...[/cyan]")
                     
-                    # Save current conversation to the new chat
-                    save_history(messages[1:], chat_name)
-                    console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
-                else:
-                    # No conversation yet, just create timestamp-based chat
-                    import time
-                    chat_name = f"chat-{int(time.time())}"
-                    save_history([], chat_name)
-                    console.print(f"[green]✓ Created new chat: {chat_name}[/green]")
+                    # If the current chat is unsaved, name it now based on first message
+                    if is_new_unsaved_chat:
+                        success, chat_name, error = save_unsaved_chat(is_new_unsaved_chat, messages, client, settings)
+                        if success:
+                            if error:
+                                console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                            console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                            console.print(f"[green]✓ Saved current conversation to '{chat_name}'[/green]")
+                        else:
+                            console.print(f"[red]✗ Failed to save chat: {error}[/red]")
+                            console.print("[red]Cannot create new chat until current chat is saved. Please try again.[/red]")
+                            print("\033[90m" + "─" * 60 + "\033[0m\n")
+                            continue
+                    else:
+                        # Current chat already has a name, just save it
+                        save_history(messages[1:], active_chat)
+                        console.print(f"[green]✓ Saved current conversation[/green]")
                 
-                # Switch to the new chat
-                settings["active_chat"] = chat_name
-                save_settings(settings)
-                active_chat = chat_name
-                
-                # Reset messages for new conversation
+                # Reset for new conversation - DON'T save or create a chat file yet
                 messages = [system_message]
-                console.print("[cyan]Starting fresh conversation in new chat[/cyan]")
+                is_new_unsaved_chat = True
+                active_chat = None  # No active chat until first message is sent
+                console.print("[cyan]Starting new chat (will be named after first message)[/cyan]")
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
                 
@@ -1180,11 +1495,32 @@ def main():
                 continue
                 
             elif user_input == '__CTRL_S__':
-                # Ctrl+S - Switch chat
+                # Ctrl+S - Switch/delete chat
+                # First, handle any unsaved new chat
+                if is_new_unsaved_chat and len([m for m in messages if m.get("role") == "user"]) > 0:
+                    # Save the current unsaved chat before switching
+                    console.print("\n[cyan]Saving current chat before switching...[/cyan]")
+                    success, chat_name, error = save_unsaved_chat(is_new_unsaved_chat, messages, client, settings)
+                    if success:
+                        if error:
+                            console.print(f"[yellow]⚠️  Auto-naming failed: {error}. Used timestamp.[/yellow]")
+                        console.print(f"[yellow]AI named this chat:[/yellow] {chat_name}")
+                        active_chat = chat_name
+                        is_new_unsaved_chat = False
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
+                        console.print("[red]Chat switch cancelled. Please resolve the save issue before switching chats.[/red]")
+                        print("\033[90m" + "─" * 60 + "\033[0m\n")
+                        continue
+                
+                # Now switch to a different chat
+                # Pass active_chat directly (can be None for new unsaved chat)
                 new_chat = handle_chat_switch(console, settings, active_chat)
+                # Note: None != string is intentional for handling unsaved chats
                 if new_chat != active_chat:
                     # Load the new chat's history
                     active_chat = new_chat
+                    is_new_unsaved_chat = False  # We're loading an existing chat
                     loaded_history = load_history(active_chat)
                     
                     # Merge with system message
@@ -1195,6 +1531,9 @@ def main():
                         messages = [system_message] + loaded_history[1:] if loaded_history else [system_message]
                     
                     console.print(f"[cyan]Loaded {len([m for m in messages if m.get('role') != 'system'])} messages[/cyan]")
+                    
+                    # Display the chat history to the user
+                    display_chat_history(loaded_history, console)
                 
                 print("\033[90m" + "─" * 60 + "\033[0m\n")
                 continue
@@ -1210,7 +1549,7 @@ def main():
                 print("\033[96m🤔 Getting a response from Melon...\033[0m")
                 
                 # Handle tool calls in a loop until we get a final response
-                max_iterations = 10  # Prevent infinite loops
+                max_iterations = 1000000000000000000000000000000000000000000000000000000000000000000000000000000  # origionaly meant to limit iterations, but it is not useful anymore
                 iteration = 0
                 
                 while iteration < max_iterations:
@@ -1218,49 +1557,71 @@ def main():
                     api_params = {
                         "model": current_model,
                         "messages": messages,
-                        "tools": [tool_definition]
+                        "tools": [tool_definition],
+                        "stream": True  # Enable streaming
                     }
                     
                     # Add reasoning if enabled
                     if settings.get('reasoning_enabled', False):
                         api_params["extra_body"] = {"reasoning": {"effort": "high"}}
                     
-                    response = client.chat.completions.create(**api_params)
+                    try:
+                        # Create streaming response
+                        stream = client.chat.completions.create(**api_params)
+                    except BadRequestError as e:
+                        # Some models (like Google Gemini) don't support tool calls in message history
+                        # Convert to plain text and retry without tools
+                        error_message = str(e)
+                        if "invalid argument" in error_message.lower() or "provider returned error" in error_message.lower():
+                            print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
+                            
+                            # Convert tool call history to plain text
+                            converted_messages = convert_tool_calls_to_plain_text(messages)
+                            
+                            # Retry without tools parameter
+                            api_params["messages"] = converted_messages
+                            del api_params["tools"]  # Remove tools from the API call
+                            
+                            stream = client.chat.completions.create(**api_params)
+                        else:
+                            # Re-raise if it's a different error
+                            raise
                     
-                    assistant_message = response.choices[0].message
+                    # Stream the response with TPS tracking
+                    content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
                     
                     # Check if there are tool calls
-                    if assistant_message.tool_calls:
-                        print(f"\033[96m🔧 Melon wants to run some commands: {[tc.function.name for tc in assistant_message.tool_calls]}\033[0m")
+                    if tool_calls_list:
+                        print(f"\033[96m🔧 Melon wants to run some commands: {[tc['function']['name'] for tc in tool_calls_list]}\033[0m")
                         
                         # Add assistant message with tool calls to history
                         messages.append({
                             "role": "assistant",
-                            "content": assistant_message.content,
+                            "content": content,
                             "tool_calls": [
                                 {
-                                    "id": tc.id,
+                                    "id": tc["id"],
                                     "type": "function",
                                     "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments
+                                        "name": tc["function"]["name"],
+                                        "arguments": tc["function"]["arguments"]
                                     }
                                 }
-                                for tc in assistant_message.tool_calls
+                                for tc in tool_calls_list
                             ]
                         })
 
-                        for tool_call in assistant_message.tool_calls:
-                            print(f"\033[96m⏳ Running: {tool_call.function.name}...\033[0m")
-                            function_name = tool_call.function.name
-                            function_args = json.loads(tool_call.function.arguments)
+                        for tool_call in tool_calls_list:
+                            print(f"\033[96m⏳ Running: {tool_call['function']['name']}...\033[0m")
+                            function_name = tool_call["function"]["name"]
+                            function_args = json.loads(tool_call["function"]["arguments"])
                             result = tools_map[function_name](**function_args)
                             print(f"\033[96m✅ Done!\033[0m")
                             
                             # Add tool result to messages
                             messages.append({
                                 "role": "tool",
-                                "tool_call_id": tool_call.id,
+                                "tool_call_id": tool_call["id"],
                                 "content": json.dumps(result)
                             })
 
@@ -1270,34 +1631,42 @@ def main():
                         # No more tool calls, we have a final response
                         messages.append({
                             "role": "assistant",
-                            "content": assistant_message.content
+                            "content": content
                         })
                         break
 
                 # Check if we hit max iterations
                 if iteration >= max_iterations:
                     print("\033[93m⚠️  Maximum iteration limit reached. Melon tried to make too many tool calls in succession.\033[0m")
-                    print(f"\033[90mDebug - Response object: {response}\033[0m")
                 # Check if response has content
-                elif assistant_message.content:
-                    print("\033[96m💬 Here's what Melon has to say:\033[0m")
-                    console.print(Markdown(assistant_message.content))
+                elif content:
+                    # Content was already displayed during streaming, no need to print again
+                    pass
                 else:
                     print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
-                    print(f"\033[90mDebug - Response object: {response}\033[0m")
                 
                 # Save conversation history after each successful interaction
                 # Skip the system message when saving (it's always added on load)
-                save_history(messages[1:], active_chat)
                 
-                # Dynamic chat renaming: rename chat based on evolving conversation
-                # Only rename if there are actual user messages (not just system/tool messages)
+                # Check if this is the first message in a new unsaved chat
                 user_message_count = len([m for m in messages if m.get("role") == "user"])
-                if user_message_count >= 1:  # At least one user message
-                    success, new_name, rename_msg = dynamic_rename_chat(messages[1:], client, active_chat, settings)
+                if is_new_unsaved_chat and user_message_count >= 1:
+                    # This is the first successful response - use helper to save with error handling
+                    success, chat_name, error = save_unsaved_chat(is_new_unsaved_chat, messages, client, settings)
                     if success:
-                        # Update active_chat reference (rename happens silently)
-                        active_chat = new_name
+                        if error:
+                            console.print(f"[yellow]⚠️  Could not auto-name chat: {error}. Using timestamp.[/yellow]")
+                        console.print(f"\n[yellow]💾 Chat named:[/yellow] {chat_name}")
+                        active_chat = chat_name
+                        is_new_unsaved_chat = False
+                    else:
+                        console.print(f"[red]✗ Failed to save chat: {error}[/red]")
+                        # Clear flag to prevent infinite retry, but keep messages
+                        # User can manually save with Ctrl+N or exit will attempt save
+                        is_new_unsaved_chat = False
+                elif active_chat is not None:
+                    # Regular save to existing chat
+                    save_history(messages[1:], active_chat)
             except Exception as e:
                 print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
