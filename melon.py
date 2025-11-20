@@ -1627,6 +1627,9 @@ def main():
                                 api_params["messages"] = converted_messages
                                 if "tools" in api_params:
                                     del api_params["tools"]
+                                # Don't request new reasoning generation on retry - reasoning is already in messages
+                                if "extra_body" in api_params:
+                                    del api_params["extra_body"]
                                 
                                 # Retry the API call
                                 stream = client.chat.completions.create(**api_params)
@@ -1649,6 +1652,9 @@ def main():
                             api_params["messages"] = converted_messages
                             if "tools" in api_params:
                                 del api_params["tools"]  # Remove tools from the API call
+                            # Don't request new reasoning generation on retry - reasoning is already in messages
+                            if "extra_body" in api_params:
+                                del api_params["extra_body"]
                             
                             stream = client.chat.completions.create(**api_params)
                             content, tool_calls_list, finish_reason, reasoning_data = stream_response_with_tps(stream, console)
