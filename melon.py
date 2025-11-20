@@ -616,6 +616,7 @@ def convert_tool_calls_to_plain_text(messages):
     """
     Convert messages with tool calls to plain text format.
     This is used as a fallback when models don't support tool call format in history.
+    Preserves the reasoning field if present.
     
     Args:
         messages: List of message dictionaries
@@ -647,10 +648,14 @@ def convert_tool_calls_to_plain_text(messages):
             else:
                 plain_content = content or ""
             
-            converted_messages.append({
+            converted_msg = {
                 "role": "assistant",
                 "content": plain_content
-            })
+            }
+            # Preserve reasoning field if present (required for some models like Gemini)
+            if "reasoning" in msg:
+                converted_msg["reasoning"] = msg["reasoning"]
+            converted_messages.append(converted_msg)
         elif msg.get("role") == "tool":
             # Convert tool result to plain text as a user message
             tool_content = msg.get("content", "")
@@ -659,7 +664,7 @@ def convert_tool_calls_to_plain_text(messages):
                 "content": f"Tool result: {tool_content}"
             })
         else:
-            # Keep other messages as-is
+            # Keep other messages as-is (including reasoning if present)
             converted_messages.append(msg)
     
     return converted_messages
@@ -691,11 +696,12 @@ def stream_response_with_tps(stream, console):
         console: Rich console for output (reserved for future use)
     
     Returns:
-        tuple: (full_content, tool_calls, finish_reason)
+        tuple: (full_content, tool_calls, finish_reason, reasoning)
     """
     full_content = ""
     tool_calls = []
     finish_reason = None
+    reasoning = None
     
     # TPS tracking variables
     token_count = 0
@@ -718,6 +724,14 @@ def stream_response_with_tps(stream, console):
             # Track finish reason
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
+            
+            # Capture reasoning field if present (OpenRouter extended response)
+            # The reasoning field is accessed via the chunk's model_extra or similar extension
+            if hasattr(delta, 'reasoning') and delta.reasoning:
+                reasoning = delta.reasoning
+            # Also check in the chunk itself for OpenRouter's extended format
+            elif hasattr(chunk, 'reasoning') and chunk.reasoning:
+                reasoning = chunk.reasoning
             
             # Handle content streaming
             if delta.content:
@@ -807,7 +821,7 @@ def stream_response_with_tps(stream, console):
             sys.stderr.write(f"\033[90m[Final TPS: {final_tps:.1f}, Total tokens: ~{token_count}]\033[0m\n")
             sys.stderr.flush()
     
-    return full_content, tool_calls, finish_reason
+    return full_content, tool_calls, finish_reason, reasoning
 
 def create_tools_map(client, console):
     """Create a tools map with closures that have access to client and console"""
@@ -1579,25 +1593,13 @@ def main():
                 iteration = 0
                 
                 while iteration < max_iterations:
-                    # Check if messages contain tool calls that need conversion
-                    # This handles models like Gemini that don't support tool call format in history
-                    needs_conversion = has_tool_calls_in_history(messages)
-                    
                     # Build API call parameters
                     api_params = {
                         "model": current_model,
                         "messages": messages,
-                        "stream": True  # Enable streaming
+                        "stream": True,  # Enable streaming
+                        "tools": [tool_definition]  # Always include tools initially
                     }
-                    
-                    # Only include tools if we haven't done tool calls yet
-                    # (first iteration or models that support tool calls in history)
-                    if not needs_conversion:
-                        api_params["tools"] = [tool_definition]
-                    else:
-                        # Convert messages to plain text for models that don't support tool calls in history
-                        print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
-                        api_params["messages"] = convert_tool_calls_to_plain_text(messages)
                     
                     # Add reasoning if enabled
                     if settings.get('reasoning_enabled', False):
@@ -1609,11 +1611,11 @@ def main():
                         
                         # Stream the response with TPS tracking
                         try:
-                            content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
+                            content, tool_calls_list, finish_reason, reasoning_data = stream_response_with_tps(stream, console)
                         except APIError as stream_error:
                             # Handle streaming errors that might occur with tool call history
                             error_msg = str(stream_error)
-                            if "provider returned error" in error_msg.lower() and not needs_conversion:
+                            if "provider returned error" in error_msg.lower():
                                 # Retry with converted messages
                                 print("\033[93m⚠️  Streaming failed. Retrying with converted message format...\033[0m")
                                 converted_messages = convert_tool_calls_to_plain_text(messages)
@@ -1623,7 +1625,7 @@ def main():
                                 
                                 # Retry the API call
                                 stream = client.chat.completions.create(**api_params)
-                                content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
+                                content, tool_calls_list, finish_reason, reasoning_data = stream_response_with_tps(stream, console)
                             else:
                                 # Re-raise if it's not a tool call compatibility issue
                                 raise
@@ -1633,8 +1635,7 @@ def main():
                         # Convert to plain text and retry without tools
                         error_message = str(e)
                         if "invalid argument" in error_message.lower() or "provider returned error" in error_message.lower():
-                            if not needs_conversion:  # Only print if we haven't already converted
-                                print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
+                            print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
                             
                             # Convert tool call history to plain text
                             converted_messages = convert_tool_calls_to_plain_text(messages)
@@ -1645,7 +1646,7 @@ def main():
                                 del api_params["tools"]  # Remove tools from the API call
                             
                             stream = client.chat.completions.create(**api_params)
-                            content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
+                            content, tool_calls_list, finish_reason, reasoning_data = stream_response_with_tps(stream, console)
                         else:
                             # Re-raise if it's a different error
                             raise
@@ -1655,7 +1656,7 @@ def main():
                         print(f"\033[96m🔧 Melon wants to run some commands: {[tc['function']['name'] for tc in tool_calls_list]}\033[0m")
                         
                         # Add assistant message with tool calls to history
-                        messages.append({
+                        assistant_msg = {
                             "role": "assistant",
                             "content": content,
                             "tool_calls": [
@@ -1669,7 +1670,11 @@ def main():
                                 }
                                 for tc in tool_calls_list
                             ]
-                        })
+                        }
+                        # Include reasoning field if present (required for some models like Gemini)
+                        if reasoning_data:
+                            assistant_msg["reasoning"] = reasoning_data
+                        messages.append(assistant_msg)
 
                         for tool_call in tool_calls_list:
                             print(f"\033[96m⏳ Running: {tool_call['function']['name']}...\033[0m")
@@ -1689,10 +1694,14 @@ def main():
                         iteration += 1
                     else:
                         # No more tool calls, we have a final response
-                        messages.append({
+                        assistant_msg = {
                             "role": "assistant",
                             "content": content
-                        })
+                        }
+                        # Include reasoning field if present (required for some models like Gemini)
+                        if reasoning_data:
+                            assistant_msg["reasoning"] = reasoning_data
+                        messages.append(assistant_msg)
                         break
 
                 # Check if we hit max iterations
