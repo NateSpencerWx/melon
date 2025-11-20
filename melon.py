@@ -8,6 +8,8 @@ import urllib.request
 import urllib.error
 import time
 import sys
+import base64
+import mimetypes
 from dotenv import load_dotenv
 from openai import OpenAI, BadRequestError, APIError
 from rich.console import Console
@@ -41,6 +43,78 @@ CHATS_DIR = ".melon_chats"
 DEFAULT_CHAT_NAME = "default"
 CURRENT_VERSION = "0.2.1"
 GITHUB_REPO = "NateSpencerWx/melon"
+
+# Supported image and video MIME types for vision models
+SUPPORTED_IMAGE_TYPES = {
+    'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'
+}
+SUPPORTED_VIDEO_TYPES = {
+    'video/mp4', 'video/mpeg', 'video/webm', 'video/quicktime'
+}
+
+def is_image_or_video_file(file_path):
+    """
+    Check if a file is an image or video based on its MIME type.
+    Returns (is_media, mime_type) tuple.
+    """
+    if not os.path.isfile(file_path):
+        return False, None
+    
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type:
+        if mime_type in SUPPORTED_IMAGE_TYPES or mime_type in SUPPORTED_VIDEO_TYPES:
+            return True, mime_type
+    return False, None
+
+def encode_image_to_base64(file_path):
+    """
+    Encode an image or video file to base64 data URL format.
+    Returns the data URL string or None if encoding fails.
+    """
+    try:
+        is_media, mime_type = is_image_or_video_file(file_path)
+        if not is_media:
+            return None
+        
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+            base64_data = base64.b64encode(file_data).decode('utf-8')
+            return f"data:{mime_type};base64,{base64_data}"
+    except Exception as e:
+        print(f"\033[93m⚠️  Failed to encode {file_path}: {e}\033[0m")
+        return None
+
+def find_media_files_in_output(command_output, working_dir=None):
+    """
+    Scan command output for file paths and identify any image/video files.
+    Returns a list of (file_path, data_url) tuples for media files found.
+    """
+    if not command_output or not isinstance(command_output, str):
+        return []
+    
+    media_files = []
+    
+    # Split output into potential file paths (by whitespace and newlines)
+    potential_paths = command_output.split()
+    
+    for path in potential_paths:
+        # Clean up the path
+        path = path.strip('"\',()[]{}')
+        
+        # Handle relative paths
+        if working_dir and not os.path.isabs(path):
+            full_path = os.path.join(working_dir, path)
+        else:
+            full_path = path
+        
+        # Check if it's a media file
+        is_media, mime_type = is_image_or_video_file(full_path)
+        if is_media:
+            data_url = encode_image_to_base64(full_path)
+            if data_url:
+                media_files.append((full_path, data_url))
+    
+    return media_files
 
 def parse_version(version_string):
     """Parse a version string like 'v0.2.0' or '0.2.0' into a tuple of integers."""
@@ -589,9 +663,25 @@ def run_terminal_command(command: str, client=None, console=None):
     
     # Execute the command
     try:
+        # Get the current working directory for resolving relative paths
+        working_dir = os.getcwd()
+        
         result = subprocess.run(command, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         output = result.stdout + result.stderr
-        return {"output": output, "returncode": result.returncode}
+        
+        # Check for media files in the output
+        media_files = find_media_files_in_output(output, working_dir)
+        
+        response = {"output": output, "returncode": result.returncode}
+        
+        # If media files were found, include them in the response
+        if media_files:
+            response["media_files"] = [
+                {"path": path, "data_url": data_url}
+                for path, data_url in media_files
+            ]
+        
+        return response
     except subprocess.TimeoutExpired:
         return {"error": "Command timed out after 60 seconds"}
     except Exception as e:
@@ -668,7 +758,7 @@ tool_definition = {
     "type": "function",
     "function": {
         "name": "run_terminal_command",
-        "description": "Run a terminal command on the user's computer and return the output. Use this for actions that require executing commands. Be cautious with commands that could delete files, modify system files, or perform other risky operations. BE AS SAFE AS POSSIBLE WHILE STILL DOING EVERYTHING YOU CAN TO FULFILL THE USER'S REQUEST.",
+        "description": "Run a terminal command on the user's computer and return the output. Use this for actions that require executing commands. Be cautious with commands that could delete files, modify system files, or perform other risky operations. BE AS SAFE AS POSSIBLE WHILE STILL DOING EVERYTHING YOU CAN TO FULFILL THE USER'S REQUEST. NOTE: If the command output mentions image or video files (PNG, JPEG, GIF, WebP, MP4, MPEG, WebM, QuickTime), those files will be automatically detected and sent to you for visual analysis.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1425,6 +1515,8 @@ def main():
             "Commands are automatically reviewed: read-only commands execute immediately, but commands that modify the system (write, delete, install, etc.) will prompt the user for approval before execution. "
             "Do not worry about asking for permission - the review system handles this automatically. Just focus on fulfilling the user's request using the tool calls available to you. "
             "If a user denies a command, acknowledge it gracefully and offer alternatives or ask how they'd like to proceed. "
+            "IMPORTANT: When you run commands that produce image or video files (like screenshots, photos, videos, etc.), the system will automatically detect these files and send them to you for analysis. "
+            "You can view and analyze these images/videos to provide better responses. The system supports common formats: PNG, JPEG, GIF, WebP for images, and MP4, MPEG, WebM, QuickTime for videos. "
             "Additional background information: "
             "You live in the terminal, inside a command line interface, where the user interacts with you. The name of the interface is the same as your name, Melon. "
             "If the user is asking you about Melon, check out its public repository on GitHub (NateSpencerWx/melon) for more information."
@@ -1678,12 +1770,49 @@ def main():
                             result = tools_map[function_name](**function_args)
                             print(f"\033[96m✅ Done!\033[0m")
                             
-                            # Add tool result to messages
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call["id"],
-                                "content": json.dumps(result)
-                            })
+                            # Check if result contains media files
+                            media_files = result.get("media_files", [])
+                            
+                            if media_files:
+                                # For media files, we need to use a different approach
+                                # First add the tool result as text only
+                                result_text = json.dumps({k: v for k, v in result.items() if k != "media_files"})
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call["id"],
+                                    "content": result_text
+                                })
+                                
+                                # Then add a user message with multi-modal content (text + images)
+                                content_parts = [
+                                    {
+                                        "type": "text",
+                                        "text": f"The command produced {len(media_files)} media file(s). Here they are for analysis:"
+                                    }
+                                ]
+                                
+                                # Add each media file
+                                for media_file in media_files:
+                                    print(f"\033[96m📷 Detected media file: {media_file['path']}\033[0m")
+                                    content_parts.append({
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": media_file["data_url"]
+                                        }
+                                    })
+                                
+                                # Add user message with media files
+                                messages.append({
+                                    "role": "user",
+                                    "content": content_parts
+                                })
+                            else:
+                                # Add tool result to messages (standard format)
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call["id"],
+                                    "content": json.dumps(result)
+                                })
 
                         print("\033[96m🤔 Melon is thinking about the results...\033[0m")
                         iteration += 1
