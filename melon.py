@@ -781,8 +781,13 @@ def stream_response_with_tps(stream, console):
                 suggestion_shown = True
     
     except APIError as e:
+        # Handle API errors during streaming (e.g., "Provider returned error")
+        error_msg = str(e)
+        print(f"\n\033[91m❌ Streaming error: {error_msg}\033[0m")
+        # Don't print full traceback for API errors as they're usually provider issues
+        if "provider returned error" in error_msg.lower():
+            print(f"\033[93m💡 This may be due to model incompatibility with tool calls in history.\033[0m")
         # Re-raise to let the caller handle it
-        # The caller will print appropriate error messages and handle retries
         raise
     except Exception as e:
         print(f"\n\033[91m❌ Streaming error: {e}\033[0m")
@@ -1593,6 +1598,9 @@ def main():
                         # Convert messages to plain text for models that don't support tool calls in history
                         print("\033[93m⚠️  Model doesn't support tool call format in history. Converting to plain text...\033[0m")
                         api_params["messages"] = convert_tool_calls_to_plain_text(messages)
+                        # Remove extra_body (reasoning) for incompatible models
+                        if "extra_body" in api_params:
+                            del api_params["extra_body"]
                     
                     # Add reasoning if enabled
                     if settings.get('reasoning_enabled', False):
@@ -1608,40 +1616,22 @@ def main():
                         except APIError as stream_error:
                             # Handle streaming errors that might occur with tool call history
                             error_msg = str(stream_error)
-                            if "provider returned error" in error_msg.lower():
-                                # Print error message first
-                                print(f"\n\033[91m❌ Streaming error: {error_msg}\033[0m")
+                            if "provider returned error" in error_msg.lower() and not needs_conversion:
+                                # Retry with converted messages
+                                print("\033[93m⚠️  Streaming failed. Retrying with converted message format...\033[0m")
+                                converted_messages = convert_tool_calls_to_plain_text(messages)
+                                api_params["messages"] = converted_messages
+                                if "tools" in api_params:
+                                    del api_params["tools"]
+                                # Remove extra_body (reasoning) for incompatible models
+                                if "extra_body" in api_params:
+                                    del api_params["extra_body"]
                                 
-                                # Try to retry with converted messages if we haven't already
-                                if not needs_conversion:
-                                    print("\033[93m⚠️  Model doesn't support tool call format in history. Retrying with converted message format...\033[0m")
-                                    converted_messages = convert_tool_calls_to_plain_text(messages)
-                                    api_params["messages"] = converted_messages
-                                    if "tools" in api_params:
-                                        del api_params["tools"]
-                                    
-                                    try:
-                                        # Retry the API call
-                                        stream = client.chat.completions.create(**api_params)
-                                        content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
-                                    except APIError as retry_error:
-                                        # Retry failed, show helpful message
-                                        print(f"\033[91m❌ Retry failed: {retry_error}\033[0m")
-                                        print(f"\033[93m💡 This model may not be compatible with the current operation. Try:\033[0m")
-                                        print(f"\033[93m   • Using a different model (^O to switch)\033[0m")
-                                        print(f"\033[93m   • Starting a new chat (^N)\033[0m")
-                                        print(f"\033[93m   • Simplifying your request\033[0m")
-                                        raise
-                                else:
-                                    # Already converted, this is a different issue
-                                    print(f"\033[93m💡 This appears to be a model or provider issue. Try:\033[0m")
-                                    print(f"\033[93m   • Using a different model (^O to switch)\033[0m")
-                                    print(f"\033[93m   • Waiting a moment and trying again\033[0m")
-                                    print(f"\033[93m   • Starting a new chat (^N)\033[0m")
-                                    raise
+                                # Retry the API call
+                                stream = client.chat.completions.create(**api_params)
+                                content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
                             else:
-                                # Different type of API error
-                                print(f"\n\033[91m❌ API Error: {error_msg}\033[0m")
+                                # Re-raise if it's not a tool call compatibility issue
                                 raise
                         
                     except BadRequestError as e:
@@ -1659,6 +1649,9 @@ def main():
                             api_params["messages"] = converted_messages
                             if "tools" in api_params:
                                 del api_params["tools"]  # Remove tools from the API call
+                            # Remove extra_body (reasoning) for incompatible models
+                            if "extra_body" in api_params:
+                                del api_params["extra_body"]
                             
                             stream = client.chat.completions.create(**api_params)
                             content, tool_calls_list, finish_reason = stream_response_with_tps(stream, console)
@@ -1719,11 +1712,7 @@ def main():
                     # Content was already displayed during streaming, no need to print again
                     pass
                 else:
-                    print("\033[93m⚠️  The model didn't return any content. This might be due to:\033[0m")
-                    print("\033[93m   • Rate limiting by the provider\033[0m")
-                    print("\033[93m   • API service issues\033[0m")
-                    print("\033[93m   • Model incompatibility\033[0m")
-                    print("\033[93m💡 Try using a different model (^O) or waiting a moment before trying again.\033[0m")
+                    print("\033[93m⚠️  Melon didn't have anything to say. This might be due to rate limiting or an API issue.\033[0m")
                 
                 # Save conversation history after each successful interaction
                 # Skip the system message when saving (it's always added on load)
@@ -1747,19 +1736,10 @@ def main():
                 elif active_chat is not None:
                     # Regular save to existing chat
                     save_history(messages[1:], active_chat)
-            except APIError as api_err:
-                # API errors are already handled and printed above with helpful messages
-                # Just remove the last user message to allow retry
-                if messages and messages[-1].get("role") == "user":
-                    messages.pop()
             except Exception as e:
-                # For other exceptions, show details
-                print(f"\033[91m❌ Unexpected error: {e}\033[0m")
+                print(f"\033[91m❌ Error: {e}\033[0m")
                 import traceback
                 print(f"\033[90m{traceback.format_exc()}\033[0m")
-                # Remove last user message to allow retry
-                if messages and messages[-1].get("role") == "user":
-                    messages.pop()
 
             print("\033[90m" + "─" * 60 + "\033[0m\n")
         except KeyboardInterrupt:
